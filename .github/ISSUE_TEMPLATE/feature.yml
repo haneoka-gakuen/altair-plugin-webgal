@@ -1,0 +1,17 @@
+name: Compatibility proposal
+description: Propose support for a WebGAL command or extension
+title: "[Proposal] "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: semantics
+    attributes:
+      label: Source semantics
+    validations:
+      required: true
+  - type: textarea
+    id: fidelity
+    attributes:
+      label: Exact, approximate, or preserved-only mapping
+    validations:
+      required: true

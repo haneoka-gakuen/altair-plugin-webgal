@@ -1,0 +1,130 @@
+{
+  "name": "@haneoka/altair-plugin-webgal",
+  "version": "0.1.0",
+  "description": "Lossless WebGAL workspace import, export, diagnostics, and Altair format plugin",
+  "keywords": [
+    "visual-novel",
+    "webgal",
+    "altair",
+    "converter",
+    "galgame"
+  ],
+  "license": "MPL-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/haneoka-gakuen/altair-plugin-webgal.git"
+  },
+  "bugs": {
+    "url": "https://github.com/haneoka-gakuen/altair-plugin-webgal/issues"
+  },
+  "homepage": "https://github.com/haneoka-gakuen/altair-plugin-webgal#readme",
+  "type": "module",
+  "sideEffects": false,
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "docs",
+    "LICENSE",
+    "LICENSE.webgal.txt",
+    "NOTICE.md",
+    "NOTICE.webgal.md",
+    "README.md",
+    "SECURITY.md"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./codec": {
+      "types": "./dist/webgal.d.ts",
+      "import": "./dist/webgal.js",
+      "default": "./dist/webgal.js"
+    },
+    "./authoring": {
+      "types": "./dist/authoring.d.ts",
+      "import": "./dist/authoring.js",
+      "default": "./dist/authoring.js"
+    },
+    "./services": {
+      "types": "./dist/services.d.ts",
+      "import": "./dist/services.js",
+      "default": "./dist/services.js"
+    },
+    "./resources": {
+      "types": "./dist/resources.d.ts",
+      "import": "./dist/resources.js",
+      "default": "./dist/resources.js"
+    },
+    "./resource-browser": {
+      "types": "./dist/resource-browser.d.ts",
+      "import": "./dist/resource-browser.js",
+      "default": "./dist/resource-browser.js"
+    },
+    "./workspace": {
+      "types": "./dist/workspace.d.ts",
+      "import": "./dist/workspace.js",
+      "default": "./dist/workspace.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "build": "vite build && tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "verify:package": "node scripts/verify-package.mjs",
+    "check": "pnpm run typecheck && pnpm run build && pnpm run verify:package",
+    "prepack": "pnpm run check"
+  },
+  "peerDependencies": {
+    "@haneoka/altair": "^0.1.0",
+    "@haneoka/altair-plugin-adv": "^0.1.0",
+    "@haneoka/vega-protocol": "^0.1.0"
+  },
+  "devDependencies": {
+    "@haneoka/altair": "^0.1.0",
+    "@haneoka/altair-plugin-adv": "^0.1.0",
+    "@haneoka/altair-plugin-flow": "^0.1.0",
+    "@haneoka/altair-plugin-vega-preview": "^0.1.0",
+    "@haneoka/vega": "^0.1.0",
+    "@haneoka/vega-protocol": "^0.1.0",
+    "@types/node": "^26.1.0",
+    "typescript": "^6.0.3",
+    "vite": "^7.3.6"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "packageManager": "pnpm@11.14.0",
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "altair": {
+    "pluginApi": 2,
+    "kind": "format",
+    "dependencies": {
+      "haneoka.altair-adv": "^0.1.0"
+    },
+    "capabilities": [
+      "format",
+      "diagnostics",
+      "commands",
+      "services"
+    ],
+    "permissions": [
+      "project.read",
+      "project.write"
+    ],
+    "targets": [
+      "web",
+      "pwa",
+      "electron",
+      "tauri",
+      "android",
+      "ios"
+    ]
+  }
+}
