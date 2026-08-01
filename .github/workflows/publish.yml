@@ -44,6 +44,26 @@ jobs:
           path: altair-plugin-webgal/.dependencies/vega
           persist-credentials: false
 
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: haneoka-gakuen/altair-plugin-flow
+          path: altair-plugin-webgal/.dependencies/altair-plugin-flow
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: haneoka-gakuen/altair-plugin-vega-preview
+          path: altair-plugin-webgal/.dependencies/altair-plugin-vega-preview
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: haneoka-gakuen/vega-plugin-richtext
+          path: altair-plugin-webgal/.dependencies/vega-plugin-richtext
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: haneoka-gakuen/vega-ui-portable
+          path: altair-plugin-webgal/.dependencies/vega-ui-portable
+          persist-credentials: false
       - name: Set up pnpm
         uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
         with:
