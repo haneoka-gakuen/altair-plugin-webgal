@@ -3,25 +3,19 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
-const manifest = JSON.parse(
-  await readFile(resolve(root, "package.json"), "utf8"),
-);
+const manifest = JSON.parse(await readFile(resolve(root, "package.json"), "utf8"));
 const missing = [];
 
 const collectTargets = (value) => {
-  if (typeof value === "string")
-    return value.startsWith("./dist/") ? [value] : [];
+  if (typeof value === "string") return value.startsWith("./dist/") ? [value] : [];
   if (!value || typeof value !== "object") return [];
   return Object.values(value).flatMap(collectTargets);
 };
 
 const targets = new Set(
-  [
-    manifest.main,
-    manifest.module,
-    manifest.types,
-    ...collectTargets(manifest.exports),
-  ].filter((value) => typeof value === "string" && value.startsWith("./dist/")),
+  [manifest.main, manifest.module, manifest.types, ...collectTargets(manifest.exports)].filter(
+    (value) => typeof value === "string" && value.startsWith("./dist/"),
+  ),
 );
 
 for (const target of targets) {
@@ -33,9 +27,7 @@ for (const target of targets) {
 }
 
 if (missing.length > 0) {
-  throw new Error(
-    `Package manifest references missing build output:\n${missing.join("\n")}`,
-  );
+  throw new Error(`Package manifest references missing build output:\n${missing.join("\n")}`);
 }
 
 const restrictedPath =
@@ -46,10 +38,7 @@ const walk = async (path, relative) => {
   const info = await stat(path);
   if (info.isDirectory()) {
     for (const entry of await readdir(path)) {
-      await walk(
-        resolve(path, entry),
-        relative ? `${relative}/${entry}` : entry,
-      );
+      await walk(resolve(path, entry), relative ? `${relative}/${entry}` : entry);
     }
     return;
   }
@@ -62,13 +51,13 @@ for (const entry of manifest.files ?? []) {
 
 const restricted = published.filter((path) => restrictedPath.test(path));
 if (restricted.length > 0) {
-  throw new Error(
-    `Restricted runtime or model payload found in package files:\n${restricted.join("\n")}`,
-  );
+  throw new Error(`Restricted runtime or model payload found in package files:\n${restricted.join("\n")}`);
 }
 
 const allowedAltairRuntimeImports = new Set([
   "@haneoka/altair/model",
+  "@haneoka/altair/documents",
+  "@haneoka/altair-plugin-adv/documents",
   "@haneoka/altair/plugins",
   "@haneoka/altair-plugin-adv/commands",
 ]);
@@ -86,9 +75,7 @@ for (const entry of await readdir(resolve(root, "dist"))) {
   }
 }
 if (forbiddenAltairRuntimeImports.length > 0) {
-  throw new Error(
-    `Published runtime crosses the Altair plugin boundary:\n${forbiddenAltairRuntimeImports.join("\n")}`,
-  );
+  throw new Error(`Published runtime crosses the Altair plugin boundary:\n${forbiddenAltairRuntimeImports.join("\n")}`);
 }
 
 console.log(

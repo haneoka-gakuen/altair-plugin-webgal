@@ -1,9 +1,5 @@
 import { defineAltairService } from "@haneoka/altair/plugins";
-import {
-  createWebGalSceneDraft,
-  importWebGal,
-  mergeWebGalScene,
-} from "./webgal";
+import { createWebGalSceneDraft, importWebGal, mergeWebGalScene } from "./webgal";
 import {
   classifyWebGalWorkspacePath,
   exportWebGalBrowserWorkspace,
@@ -49,9 +45,7 @@ export interface AltairWebGalService {
 
 export const ALTAIR_WEBGAL_SERVICE_ID = "haneoka.altair.webgal";
 
-export const ALTAIR_WEBGAL_SERVICE = defineAltairService<AltairWebGalService>(
-  ALTAIR_WEBGAL_SERVICE_ID,
-);
+export const ALTAIR_WEBGAL_SERVICE = defineAltairService<AltairWebGalService>(ALTAIR_WEBGAL_SERVICE_ID);
 
 export const altairWebGalService: AltairWebGalService = Object.freeze({
   profile: WEBGAL_AUTHORING_PROFILE,

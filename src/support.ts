@@ -1,14 +1,6 @@
-import {
-  STORY_PROJECT_VERSION,
-  type JsonObject,
-  type JsonValue,
-  type StoryProject,
-} from "@haneoka/altair/model";
-import type {
-  StoryConversionFidelity,
-  StoryDiagnostic,
-  StoryDiagnosticSeverity,
-} from "@haneoka/altair/protocol";
+import { isVegaCommandType } from "@haneoka/vega-protocol";
+import { STORY_PROJECT_VERSION, type JsonObject, type JsonValue, type StoryProject } from "@haneoka/altair/model";
+import type { StoryConversionFidelity, StoryDiagnostic, StoryDiagnosticSeverity } from "@haneoka/altair/protocol";
 
 export interface StoryImportResult {
   readonly format: "webgal";
@@ -33,18 +25,13 @@ export const storyDiagnostic = (
 });
 
 /** Preserve the valid JSON number `-0`, which native JSON.stringify loses. */
-export const stringifyStoryJson = (
-  value: JsonValue,
-  pretty = true,
-): string => {
+export const stringifyStoryJson = (value: JsonValue, pretty = true): string => {
   let compact: string | undefined;
   try {
     compact = JSON.stringify(value);
   } catch (error) {
     throw new TypeError(
-      `value must contain valid JSON data: ${
-        error instanceof Error ? error.message : String(error)
-      }`,
+      `value must contain valid JSON data: ${error instanceof Error ? error.message : String(error)}`,
     );
   }
   if (compact === undefined) {
@@ -55,8 +42,7 @@ export const stringifyStoryJson = (
   const markerJson = JSON.stringify(marker);
   const serialized = JSON.stringify(
     value,
-    (_key, item: unknown) =>
-      typeof item === "number" && Object.is(item, -0) ? marker : item,
+    (_key, item: unknown) => (typeof item === "number" && Object.is(item, -0) ? marker : item),
     pretty ? 2 : undefined,
   );
   if (serialized === undefined) {
@@ -68,23 +54,10 @@ export const stringifyStoryJson = (
 const record = (value: unknown): value is Record<string, unknown> =>
   Boolean(value) && typeof value === "object" && !Array.isArray(value);
 
-const DANGEROUS_JSON_KEYS = new Set([
-  "__proto__",
-  "constructor",
-  "prototype",
-]);
+const DANGEROUS_JSON_KEYS = new Set(["__proto__", "constructor", "prototype"]);
 
-const assertJsonValue = (
-  value: unknown,
-  path: string,
-  seen: Set<object>,
-  depth: number,
-): void => {
-  if (
-    value === null ||
-    typeof value === "string" ||
-    typeof value === "boolean"
-  ) {
+const assertJsonValue = (value: unknown, path: string, seen: Set<object>, depth: number): void => {
+  if (value === null || typeof value === "string" || typeof value === "boolean") {
     return;
   }
   if (typeof value === "number") {
@@ -128,10 +101,7 @@ const assertJsonValue = (
   seen.delete(value);
 };
 
-const requireObject = (
-  value: unknown,
-  path: string,
-): Record<string, unknown> => {
+const requireObject = (value: unknown, path: string): Record<string, unknown> => {
   if (!record(value)) throw new TypeError(`${path} must be an object`);
   assertJsonValue(value, path, new Set(), 0);
   return value;
@@ -151,9 +121,7 @@ const requireText = (value: unknown, path: string): string => {
  * only proves that lossless metadata is a finite JSON StoryProject with valid
  * identities before the WebGAL codec reads or merges it.
  */
-export function assertValidStoryProject(
-  value: unknown,
-): asserts value is StoryProject {
+export function assertValidStoryProject(value: unknown): asserts value is StoryProject {
   const project = requireObject(value, "$");
   if (project.version !== STORY_PROJECT_VERSION) {
     throw new TypeError(`$.version must be ${STORY_PROJECT_VERSION}`);
@@ -204,27 +172,20 @@ export function assertValidStoryProject(
       objectIds.add(commandId);
       if (
         command.command !== null &&
-        (!Number.isSafeInteger(command.command) ||
-          Number(command.command) < 0)
+        !isVegaCommandType(command.command) &&
+        (!Number.isSafeInteger(command.command) || Number(command.command) < 0)
       ) {
-        throw new TypeError(
-          `${commandPath}.command must be a non-negative integer or null`,
-        );
+        throw new TypeError(`${commandPath}.command must be a native opcode, qualified plugin command type, or null`);
       }
       requireObject(command.fields, `${commandPath}.fields`);
       requireObject(command.extensions, `${commandPath}.extensions`);
       if (command.source !== undefined) {
-        const source = requireObject(
-          command.source,
-          `${commandPath}.source`,
-        );
+        const source = requireObject(command.source, `${commandPath}.source`);
         requireText(source.format, `${commandPath}.source.format`);
       }
     }
   }
   if (!hasEntry) {
-    throw new TypeError(
-      `$.entrySceneId does not identify a scene: ${entrySceneId}`,
-    );
+    throw new TypeError(`$.entrySceneId does not identify a scene: ${entrySceneId}`);
   }
 }

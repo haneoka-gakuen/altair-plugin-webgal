@@ -13,40 +13,31 @@ import {
 } from "./resources.js";
 
 export interface WebGalResourceBrowserProviderOptions {
-  readonly files:
-    | readonly WebGalBrowserWorkspaceFile[]
-    | (() => readonly WebGalBrowserWorkspaceFile[]);
+  readonly files: readonly WebGalBrowserWorkspaceFile[] | (() => readonly WebGalBrowserWorkspaceFile[]);
   readonly id?: string;
   readonly name?: string;
-  readonly refresh?: (
-    request: ResourceBrowserRequest,
-  ) => void | Promise<void>;
+  readonly refresh?: (request: ResourceBrowserRequest) => void | Promise<void>;
   readonly dispose?: () => void | Promise<void>;
 }
 
 export type WebGalResourceBrowserFile = ResourceBrowserFile<WebGalBrowserWorkspaceFile>;
-export type WebGalResourceBrowserInsert = ResourceBrowserInsert<
-  Readonly<Record<string, unknown>>
->;
+export type WebGalResourceBrowserInsert = ResourceBrowserInsert<Readonly<Record<string, unknown>>>;
 
 const ROOT = "workspace";
 const rootPath = Object.freeze([ROOT]);
 
-const filesFrom = (
-  options: WebGalResourceBrowserProviderOptions,
-): readonly WebGalBrowserWorkspaceFile[] =>
+const filesFrom = (options: WebGalResourceBrowserProviderOptions): readonly WebGalBrowserWorkspaceFile[] =>
   typeof options.files === "function" ? options.files() : options.files;
 
 const contentPath = (file: WebGalBrowserWorkspaceFile): readonly string[] =>
-  file.logicalPath.replace(/^game\//iu, "").split("/").filter(Boolean);
+  file.logicalPath
+    .replace(/^game\//iu, "")
+    .split("/")
+    .filter(Boolean);
 
-const browserPath = (
-  file: WebGalBrowserWorkspaceFile,
-): ResourceBrowserPath => [ROOT, ...contentPath(file)];
+const browserPath = (file: WebGalBrowserWorkspaceFile): ResourceBrowserPath => [ROOT, ...contentPath(file)];
 
-const acceptedKinds = (
-  file: WebGalBrowserWorkspaceFile,
-): readonly string[] => {
+const acceptedKinds = (file: WebGalBrowserWorkspaceFile): readonly string[] => {
   if (file.kind === "background") return ["background"];
   if (file.kind === "figure" || file.kind === "image") {
     return ["still", "frame"];
@@ -56,39 +47,23 @@ const acceptedKinds = (
   return [];
 };
 
-const requestAccepts = (
-  kinds: readonly string[],
-  request: ResourceBrowserRequest,
-): boolean =>
-  request.acceptedKinds.length === 0 ||
-  kinds.some((kind) => request.acceptedKinds.includes(kind));
+const requestAccepts = (kinds: readonly string[], request: ResourceBrowserRequest): boolean =>
+  request.acceptedKinds.length === 0 || kinds.some((kind) => request.acceptedKinds.includes(kind));
 
 const throwIfAborted = (request: ResourceBrowserRequest): void => {
   if (!request.signal?.aborted) return;
-  throw (
-    request.signal.reason ??
-    new DOMException("Resource browsing aborted", "AbortError")
-  );
+  throw request.signal.reason ?? new DOMException("Resource browsing aborted", "AbortError");
 };
 
-const displayKind = (
-  file: WebGalBrowserWorkspaceFile,
-): WebGalResourceBrowserFile["displayKind"] => {
-  if (
-    file.kind === "background" ||
-    file.kind === "figure" ||
-    file.kind === "image"
-  ) {
+const displayKind = (file: WebGalBrowserWorkspaceFile): WebGalResourceBrowserFile["displayKind"] => {
+  if (file.kind === "background" || file.kind === "figure" || file.kind === "image") {
     return "image";
   }
   if (file.kind === "audio" || file.kind === "video") return file.kind;
   return "data";
 };
 
-const fileNode = (
-  file: WebGalBrowserWorkspaceFile,
-  request: ResourceBrowserRequest,
-): WebGalResourceBrowserFile => {
+const fileNode = (file: WebGalBrowserWorkspaceFile, request: ResourceBrowserRequest): WebGalResourceBrowserFile => {
   const kinds = acceptedKinds(file);
   const kind = displayKind(file);
   return {
@@ -99,18 +74,14 @@ const fileNode = (
     detail: file.logicalPath,
     displayKind: kind,
     ...(kind === "image" && file.url ? { previewUrl: file.url } : {}),
-    ...(kind === "audio" && file.url
-      ? { audioPreviewUrl: file.url }
-      : {}),
+    ...(kind === "audio" && file.url ? { audioPreviewUrl: file.url } : {}),
     acceptedKinds: kinds,
     available: kinds.length > 0 && requestAccepts(kinds, request),
     reference: file,
   };
 };
 
-const directoryNode = (
-  path: ResourceBrowserPath,
-): ResourceBrowserDirectory => ({
+const directoryNode = (path: ResourceBrowserPath): ResourceBrowserDirectory => ({
   type: "directory",
   id: `webgal:${path.join("/")}`,
   name: path.at(-1) || ROOT,
@@ -122,31 +93,16 @@ const canonicalBrowserPath = (path: ResourceBrowserPath): string[] => {
     throw new TypeError("Resource browser path is outside this provider");
   }
   return path.map((segment) => {
-    if (
-      typeof segment !== "string" ||
-      !segment ||
-      segment === "." ||
-      segment === ".." ||
-      segment.includes("/")
-    ) {
+    if (typeof segment !== "string" || !segment || segment === "." || segment === ".." || segment.includes("/")) {
       throw new TypeError("Resource browser path is invalid");
     }
     return segment;
   });
 };
 
-const preferredVisualKind = (
-  request: ResourceBrowserRequest,
-): WebGalWorkspaceVisualInsertKind | undefined => {
-  for (const kind of [
-    request.preferredKind,
-    ...request.acceptedKinds,
-  ]) {
-    if (
-      kind === "background" ||
-      kind === "still" ||
-      kind === "frame"
-    ) {
+const preferredVisualKind = (request: ResourceBrowserRequest): WebGalWorkspaceVisualInsertKind | undefined => {
+  for (const kind of [request.preferredKind, ...request.acceptedKinds]) {
+    if (kind === "background" || kind === "still" || kind === "frame") {
       return kind;
     }
   }
@@ -155,10 +111,7 @@ const preferredVisualKind = (
 
 export const createWebGalResourceBrowserProvider = (
   options: WebGalResourceBrowserProviderOptions,
-): ResourceBrowserProvider<
-  WebGalBrowserWorkspaceFile,
-  Readonly<Record<string, unknown>>
-> => {
+): ResourceBrowserProvider<WebGalBrowserWorkspaceFile, Readonly<Record<string, unknown>>> => {
   const root: ResourceBrowserDirectory = Object.freeze({
     type: "directory",
     id: "webgal:workspace",
@@ -173,9 +126,7 @@ export const createWebGalResourceBrowserProvider = (
       throwIfAborted(request);
       const preferred = request.preferredKind;
       if (!preferred) return rootPath;
-      const file = filesFrom(options).find((entry) =>
-        acceptedKinds(entry).includes(preferred),
-      );
+      const file = filesFrom(options).find((entry) => acceptedKinds(entry).includes(preferred));
       return file ? browserPath(file).slice(0, -1) : rootPath;
     },
     list(path: ResourceBrowserPath, request: ResourceBrowserRequest) {
@@ -186,11 +137,7 @@ export const createWebGalResourceBrowserProvider = (
       const files: WebGalResourceBrowserFile[] = [];
       for (const file of filesFrom(options)) {
         const segments = contentPath(file);
-        if (
-          !relative.every(
-            (segment, index) => segments[index] === segment,
-          )
-        ) {
+        if (!relative.every((segment, index) => segments[index] === segment)) {
           continue;
         }
         const remaining = segments.slice(relative.length);
@@ -219,26 +166,13 @@ export const createWebGalResourceBrowserProvider = (
         ),
       ];
     },
-    open(
-      file: ResourceBrowserFile<WebGalBrowserWorkspaceFile>,
-      request: ResourceBrowserRequest,
-    ) {
+    open(file: ResourceBrowserFile<WebGalBrowserWorkspaceFile>, request: ResourceBrowserRequest) {
       throwIfAborted(request);
-      if (
-        !file.available ||
-        !requestAccepts(file.acceptedKinds, request)
-      ) {
+      if (!file.available || !requestAccepts(file.acceptedKinds, request)) {
         return undefined;
       }
-      const insert = webGalWorkspaceResourceInsert(
-        file.reference,
-        preferredVisualKind(request),
-      );
-      if (
-        !insert ||
-        (request.acceptedKinds.length > 0 &&
-          !request.acceptedKinds.includes(insert.kind))
-      ) {
+      const insert = webGalWorkspaceResourceInsert(file.reference, preferredVisualKind(request));
+      if (!insert || (request.acceptedKinds.length > 0 && !request.acceptedKinds.includes(insert.kind))) {
         return undefined;
       }
       return {
@@ -259,8 +193,7 @@ export const createWebGalResourceBrowserProvider = (
     },
     ...(options.refresh
       ? {
-          refresh: (request: ResourceBrowserRequest) =>
-            options.refresh!(request),
+          refresh: (request: ResourceBrowserRequest) => options.refresh!(request),
         }
       : {}),
     ...(options.dispose ? { dispose: () => options.dispose!() } : {}),

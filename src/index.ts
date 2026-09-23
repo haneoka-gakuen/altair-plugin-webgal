@@ -1,29 +1,17 @@
-import {
-  type AltairFormatCodec,
-  type AltairPluginV2,
-} from "@haneoka/altair/plugins";
+import { WEBGAL_DOCUMENT_COMMANDS } from "./documents.js";
+import { contributeWebGalEditors } from "./editor/contributions.js";
+import { importWebGalCraftWorkspace } from "./craft.js";
+import { type AltairFormatCodec, type AltairPluginV2 } from "@haneoka/altair/plugins";
 import type {
   AltairCommandSchemaContribution,
   AltairFormatContribution,
   AltairValidatorContribution,
 } from "@haneoka/altair/protocol";
-import {
-  WEBGAL_BUILTIN_COMMAND_NAMES,
-  importWebGal,
-  serializeWebGalText,
-  type ImportWebGalOptions,
-} from "./webgal";
-import {
-  exportWebGalWorkspace,
-  importWebGalWorkspace,
-  sniffWebGalWorkspace,
-} from "./workspace";
+import { WEBGAL_BUILTIN_COMMAND_NAMES, importWebGal, serializeWebGalText, type ImportWebGalOptions } from "./webgal";
+import { exportWebGalWorkspace, importWebGalWorkspace, sniffWebGalWorkspace } from "./workspace";
 import { storyDiagnostic } from "./support";
 import { ALTAIR_WEBGAL_SERVICE, altairWebGalService } from "./services";
-import {
-  createWebGalResourceBrowserProvider,
-  type WebGalResourceBrowserProviderOptions,
-} from "./resource-browser.js";
+import { createWebGalResourceBrowserProvider, type WebGalResourceBrowserProviderOptions } from "./resource-browser.js";
 
 const decoder = new TextDecoder();
 const encoder = new TextEncoder();
@@ -32,10 +20,7 @@ const optionalString = (value: unknown): string | undefined =>
   typeof value === "string" && value.trim() ? value.trim() : undefined;
 
 const importOptions = (value: unknown): ImportWebGalOptions => {
-  const options =
-    value && typeof value === "object" && !Array.isArray(value)
-      ? (value as Record<string, unknown>)
-      : {};
+  const options = value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
   const title = optionalString(options.title);
   const sceneId = optionalString(options.sceneId);
   const sceneName = optionalString(options.sceneName);
@@ -47,18 +32,13 @@ const importOptions = (value: unknown): ImportWebGalOptions => {
     ...(sceneName ? { sceneName } : {}),
     ...(releaseServer ? { releaseServer } : {}),
     ...(assetRoot ? { assetRoot } : {}),
-    ...(Number.isSafeInteger(options.localeIndex) &&
-    Number(options.localeIndex) >= 0
+    ...(Number.isSafeInteger(options.localeIndex) && Number(options.localeIndex) >= 0
       ? { localeIndex: Number(options.localeIndex) }
       : {}),
     ...(Array.isArray(options.additionalCommandNames) &&
-    options.additionalCommandNames.every(
-      (name) => typeof name === "string" && name.trim(),
-    )
+    options.additionalCommandNames.every((name) => typeof name === "string" && name.trim())
       ? {
-          additionalCommandNames: options.additionalCommandNames.map((name) =>
-            String(name).trim(),
-          ),
+          additionalCommandNames: options.additionalCommandNames.map((name) => String(name).trim()),
         }
       : {}),
   };
@@ -76,9 +56,7 @@ export const webGalFormatCodec: AltairFormatCodec = {
     return importWebGal(input).project;
   },
   export(project) {
-    return encoder.encode(
-      serializeWebGalText(project, { losslessMetadata: "project" }),
-    );
+    return encoder.encode(serializeWebGalText(project, { losslessMetadata: "project" }));
   },
 };
 
@@ -88,9 +66,7 @@ export const webGalFormatContribution = Object.freeze({
   extensions: webGalFormatCodec.extensions,
   mediaTypes: ["text/plain", "text/x-webgal"],
   sniff(request) {
-    return sniffWebGalWorkspace(request, (input) =>
-      webGalFormatCodec.sniff(input),
-    );
+    return sniffWebGalWorkspace(request, (input) => webGalFormatCodec.sniff(input));
   },
   import(request) {
     return importWebGalWorkspace(request, importOptions(request.options));
@@ -100,20 +76,42 @@ export const webGalFormatContribution = Object.freeze({
   },
 } satisfies AltairFormatContribution);
 
+export const webGalCraftFormatContribution = Object.freeze({
+  ...webGalFormatContribution,
+  id: "webgal-craft",
+  name: "WebGAL Craft",
+  extensions: [".wgcp"],
+  sniff(request) {
+    return request.files.some((file) => file.path === "project.wgcp") ? 0.99 : 0;
+  },
+  import(request) {
+    return importWebGalCraftWorkspace(request, importOptions(request.options));
+  },
+} satisfies AltairFormatContribution);
+
 export const webGalFidelityValidator = Object.freeze({
   id: "webgal-fidelity",
   name: "WebGAL fidelity",
   validate(project) {
     return project.scenes.flatMap((scene) =>
       scene.commands.flatMap((command, index) =>
-        command.source?.format === "webgal" && command.command === null
+        command.source?.format === "webgal" &&
+        (command.command === null ||
+          (command.extensions.webgalFidelity &&
+            typeof command.extensions.webgalFidelity === "object" &&
+            !Array.isArray(command.extensions.webgalFidelity) &&
+            command.extensions.webgalFidelity.status !== "exact"))
           ? [
               storyDiagnostic(
                 "warning",
-                "webgal.preserved-only",
+                command.command === null ? "webgal.preserved-only" : "webgal.approximate",
                 `scenes.${scene.id}.commands.${index}`,
-                `${command.source.command || "WebGAL command"} is preserved for round trips but is not executable`,
-                "preserved-only",
+                command.command === null
+                  ? `${command.source.command || "WebGAL command"} is preserved for round trips but is not executable`
+                  : `${command.source.command || "WebGAL command"} has source-conversion differences: ${
+                      (command.extensions.webgalFidelity as Record<string, unknown>).message
+                    }`,
+                command.command === null ? "preserved-only" : "approximate",
                 command.source.line,
               ),
             ]
@@ -152,15 +150,10 @@ export const webGalCommandSchemas = Object.freeze(
 
 export interface AltairWebGalPluginOptions {
   readonly resourceFiles?: WebGalResourceBrowserProviderOptions["files"];
-  readonly resourceBrowser?: Omit<
-    WebGalResourceBrowserProviderOptions,
-    "files"
-  >;
+  readonly resourceBrowser?: Omit<WebGalResourceBrowserProviderOptions, "files">;
 }
 
-export const createAltairWebGalPlugin = (
-  options: AltairWebGalPluginOptions = {},
-): AltairPluginV2 => ({
+export const createAltairWebGalPlugin = (options: AltairWebGalPluginOptions = {}): AltairPluginV2 => ({
   manifest: {
     id: "haneoka.altair-webgal",
     name: "Altair WebGAL",
@@ -170,6 +163,8 @@ export const createAltairWebGalPlugin = (
       "haneoka.altair-adv": "^0.1.0",
     },
     capabilities: [
+      "editor",
+      "panel",
       "format",
       "diagnostics",
       "commands",
@@ -178,9 +173,13 @@ export const createAltairWebGalPlugin = (
     ],
   },
   setup(context) {
+    contributeWebGalEditors(context);
     context.provide(ALTAIR_WEBGAL_SERVICE, altairWebGalService);
     context.contribute("format", webGalFormatContribution);
+    context.contribute("format", webGalCraftFormatContribution);
     context.contribute("validator", webGalFidelityValidator);
+    for (const document of WEBGAL_DOCUMENT_COMMANDS)
+      context.contribute("command", { id: `document.${document.type.name}`, name: document.type.name, document });
     for (const schema of webGalCommandSchemas) {
       context.contribute("command", schema);
     }
@@ -206,3 +205,7 @@ export * from "./resources";
 export * from "./resource-browser";
 export * from "./workspace";
 export default altairWebGalPlugin;
+
+export * from "./craft.js";
+
+export * from "./documents.js";

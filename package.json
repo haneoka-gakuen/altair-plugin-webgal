@@ -69,14 +69,21 @@
       "import": "./dist/workspace.js",
       "default": "./dist/workspace.js"
     },
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./craft": {
+      "types": "./dist/craft.d.ts",
+      "import": "./dist/craft.js",
+      "default": "./dist/craft.js"
+    }
   },
   "scripts": {
     "build": "vite build && tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "verify:package": "node scripts/verify-package.mjs",
     "check": "pnpm run typecheck && pnpm run build && pnpm run verify:package",
-    "prepack": "pnpm run check"
+    "prepack": "pnpm run check",
+    "format": "prettier --write . --ignore-unknown",
+    "format:check": "prettier --check . --ignore-unknown"
   },
   "peerDependencies": {
     "@haneoka/altair": "^0.1.0",
@@ -92,7 +99,10 @@
     "@haneoka/vega-protocol": "^0.1.0",
     "@types/node": "^26.1.0",
     "typescript": "^6.0.3",
-    "vite": "^7.3.6"
+    "vite": "^7.3.6",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "prettier": "3.7.4"
   },
   "engines": {
     "node": ">=20"
@@ -112,7 +122,9 @@
       "format",
       "diagnostics",
       "commands",
-      "services"
+      "services",
+      "editor",
+      "panel"
     ],
     "permissions": [
       "project.read",
@@ -126,5 +138,12 @@
       "android",
       "ios"
     ]
+  },
+  "dependencies": {
+    "@haneoka/altair-ui-react": "^0.1.0",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4",
+    "lucide-react": "^1.27.0",
+    "@haneoka/vega-plugin-webgal": "^0.1.0"
   }
 }

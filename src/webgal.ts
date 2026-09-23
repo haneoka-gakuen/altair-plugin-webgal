@@ -1,19 +1,14 @@
+import { WEBGAL_ANIMATION_PRESETS } from "./animations.js";
+import { webGalFigureProfile, webGalRuntimeLayout } from "./figure-layout.js";
 /**
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/.
- *
- * WebGAL command semantics and portions of the text-format behavior are
- * adapted from OpenWebGAL/WebGAL at commit
- * e7f0abeb855b5b442460743bdaa9778ca751b43f.
- * See NOTICE.webgal.md for complete provenance.
  */
 import { ADV_COMMAND } from "@haneoka/altair-plugin-adv/commands";
-import type {
-  StoryConversionFidelity,
-  StoryDiagnostic,
-} from "@haneoka/altair/protocol";
+import type { StoryConversionFidelity, StoryDiagnostic } from "@haneoka/altair/protocol";
 import { VEGA_SYSTEM_OPCODE } from "@haneoka/vega-protocol";
+import { WEBGAL_COMMAND_TYPES } from "@haneoka/vega-plugin-webgal/commands";
 import {
   STORY_PROJECT_VERSION,
   cloneStoryValue,
@@ -25,12 +20,7 @@ import {
   type StoryScene,
   type StorySourceLocation,
 } from "@haneoka/altair/model";
-import {
-  assertValidStoryProject,
-  storyDiagnostic,
-  stringifyStoryJson,
-  type StoryImportResult,
-} from "./support.js";
+import { assertValidStoryProject, storyDiagnostic, stringifyStoryJson, type StoryImportResult } from "./support.js";
 
 export interface WebGalArgument {
   name: string;
@@ -39,6 +29,7 @@ export interface WebGalArgument {
 
 export interface WebGalStatement {
   line: number;
+  endLine?: number;
   raw: string;
   kind: "comment" | "dialogue" | "command" | "unknown";
   name: string;
@@ -133,8 +124,7 @@ const findUnescaped = (value: string, wanted: string): number => {
  * Mirrors WebGAL's display escape order. Delimiter-sensitive parsers must use
  * `escapedContent` first and only unescape the resulting display text.
  */
-const unescapeWebGal = (value: string): string =>
-  value.replace(/\\\\/g, "\\").replace(/\\([|:,;.])/g, "$1");
+const unescapeWebGal = (value: string): string => value.replace(/\\\\/g, "\\").replace(/\\([|:,;.])/g, "$1");
 
 const splitBodyAndArguments = (value: string): [string, string] => {
   let escaped = false;
@@ -169,10 +159,11 @@ const argumentTokens = (value: string): string[] => {
   let quote = "";
   let depth = 0;
   const finish = (): void => {
-    if (token) tokens.push(token);
+    if (token.trim()) tokens.push(token.trim());
     token = "";
   };
-  for (const character of value) {
+  for (let index = 0; index < value.length; index++) {
+    const character = value[index]!;
     if (escaped) {
       token += character;
       escaped = false;
@@ -195,7 +186,7 @@ const argumentTokens = (value: string): string[] => {
     }
     if (character === "{" || character === "[") depth += 1;
     if (character === "}" || character === "]") depth = Math.max(0, depth - 1);
-    if (/\s/.test(character) && depth === 0) finish();
+    if (/\s/.test(character) && depth === 0 && /^\s+-/u.test(value.slice(index))) finish();
     else token += character;
   }
   finish();
@@ -219,27 +210,63 @@ const parseArguments = (value: string): WebGalArgument[] => {
   return parsed;
 };
 
-/** Haneoka's compact parser for WebGAL's one-statement-per-line syntax. */
-export const parseWebGalScene = (
-  input: string | Uint8Array,
-  options: ParseWebGalOptions = {},
-): WebGalParseResult => {
+interface WebGalLogicalLine {
+  line: number;
+  endLine: number;
+  raw: string;
+  body: string;
+}
+const webGalLogicalLines = (source: string): WebGalLogicalLine[] => {
+  const pieces = source.split(/(\r\n|\r|\n)/u),
+    lines: Array<{ text: string; ending: string; offset: number }> = [];
+  let offset = 0;
+  for (let i = 0; i < pieces.length; i += 2) {
+    const text = pieces[i] ?? "",
+      ending = pieces[i + 1] ?? "";
+    lines.push({ text, ending, offset });
+    offset += text.length + ending.length;
+  }
+  const result: WebGalLogicalLine[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const start = i;
+    let body = lines[i]!.text;
+    while (i + 1 < lines.length) {
+      const next = lines[i + 1]!.text;
+      const implicit = next.startsWith(" ") && /^[|-]/u.test(next.trimStart()) && !next.includes("-concat");
+      const explicit = lines[i]!.text.endsWith("\\");
+      if (!explicit && !implicit) break;
+      if (explicit) body = body.slice(0, -1);
+      const content = next.trim();
+      body += (content.startsWith("-") ? " " : "") + content;
+      i++;
+    }
+    const first = lines[start]!,
+      last = lines[i]!;
+    result.push({
+      line: start + 1,
+      endLine: i + 1,
+      raw: source.slice(first.offset, last.offset + last.text.length),
+      body,
+    });
+  }
+  return result;
+};
+
+export const parseWebGalScene = (input: string | Uint8Array, options: ParseWebGalOptions = {}): WebGalParseResult => {
   const source = typeof input === "string" ? input : new TextDecoder().decode(input);
   const additionalCommands = new Set(
     (options.additionalCommandNames ?? []).map((name) => name.trim().toLowerCase()).filter(Boolean),
   );
   const statements: WebGalStatement[] = [];
   const diagnostics: StoryDiagnostic[] = [];
-  for (const [lineIndex, physicalLine] of source
-    .replace(/^\uFEFF/, "")
-    .split(/\r?\n/)
-    .entries()) {
-    const line = lineIndex + 1;
-    const trimmed = physicalLine.trim();
+  for (const logical of webGalLogicalLines(source)) {
+    const { line, raw: physicalLine } = logical;
+    const trimmed = logical.body.trim();
     if (!trimmed) continue;
     if (trimmed.startsWith(";")) {
       statements.push({
         line,
+        ...(logical.endLine > line ? { endLine: logical.endLine } : {}),
         raw: physicalLine,
         kind: "comment",
         name: "comment",
@@ -271,9 +298,7 @@ export const parseWebGalScene = (
     const prefix = colon < 0 ? "" : unescapeWebGal(body.slice(0, colon).trim());
     const colonlessCommand = colon < 0 ? unescapeWebGal(body.trim()).toLowerCase() : "";
     const normalized = colon < 0 ? colonlessCommand : prefix.toLowerCase();
-    const namespacedUnknown =
-      normalized.startsWith("@") ||
-      /^[a-z][a-z0-9_-]*(?:[./][a-z0-9_-]+)+$/i.test(normalized);
+    const namespacedUnknown = normalized.startsWith("@") || /^[a-z][a-z0-9_-]*(?:[./][a-z0-9_-]+)+$/i.test(normalized);
     const kind: WebGalStatement["kind"] =
       WEBGAL_COMMANDS.has(normalized) || additionalCommands.has(normalized)
         ? "command"
@@ -297,6 +322,7 @@ export const parseWebGalScene = (
     ).trim();
     statements.push({
       line,
+      ...(logical.endLine > line ? { endLine: logical.endLine } : {}),
       raw: physicalLine,
       kind,
       name: kind === "dialogue" ? prefix : normalized,
@@ -311,6 +337,7 @@ export const parseWebGalScene = (
 };
 
 export interface ImportWebGalOptions {
+  animationPresets?: Readonly<Record<string, readonly JsonObject[]>>;
   title?: string;
   sceneId?: string;
   sceneName?: string;
@@ -430,7 +457,7 @@ const sourceFor = (statement: WebGalStatement): StorySourceLocation => ({
 const commandFrom = (
   statement: WebGalStatement,
   suffix: string | number,
-  opcode: number | null,
+  commandType: number | string | null,
   fields: JsonObject,
 ): StoryProjectCommand => {
   const mappedFields: JsonObject = {
@@ -441,12 +468,12 @@ const commandFrom = (
   };
   return {
     id: importedStoryId("webgal", statement.line, suffix),
-    command: opcode,
+    command: commandType,
     fields: mappedFields,
     source: sourceFor(statement),
     extensions: {
       webgalOriginalFields: cloneStoryValue(mappedFields),
-      ...(opcode === null
+      ...(commandType === null
         ? {
             webgalOpaque: {
               name: statement.name,
@@ -508,16 +535,17 @@ const splitChoices = (content: string): WebGalChoice[] =>
   });
 
 const positionFromArguments = (statement: WebGalStatement): number => {
-  if (argument(statement, "left") !== undefined) return 1;
-  if (argument(statement, "right") !== undefined) return 9;
+  // WebGAL applies right after left; a present but false flag is not enabled.
+  if (booleanArgument(statement, "right") === true) return 9;
+  if (booleanArgument(statement, "left") === true) return 1;
   return 5;
 };
 
 const defaultFigureTarget = (statement: WebGalStatement): string => {
   const id = argument(statement, "id");
   if (typeof id === "string" && id) return id;
-  if (argument(statement, "left") !== undefined) return "fig-left";
-  if (argument(statement, "right") !== undefined) return "fig-right";
+  if (booleanArgument(statement, "right") === true) return "fig-right";
+  if (booleanArgument(statement, "left") === true) return "fig-left";
   return "fig-center";
 };
 
@@ -557,14 +585,13 @@ const webGalAssetSource = (value: string, kind: WebGalAssetKind, root: string): 
   return [root, kind, normalized].filter(Boolean).join("/");
 };
 
-const registerWebGalAsset = (
-  context: WebGalVisualImportContext,
-  value: string,
-  kind: WebGalAssetKind,
-): string => {
+const registerWebGalAsset = (context: WebGalVisualImportContext, value: string, kind: WebGalAssetKind): string => {
   const source = webGalAssetSource(value, kind, context.assetRoot);
   if (!source) return "";
-  const category = webGalAssetCategory[kind];
+  // A model manifest is not a texture. Sending it through the still-image
+  // warmup makes the browser decode JSON as an image before Cubism can load.
+  const category =
+    kind === "figure" && /model3?\.json(?:[?#].*)?$/iu.test(source) ? "live2d" : webGalAssetCategory[kind];
   const current = context.assets[category];
   const entries =
     current && typeof current === "object" && !Array.isArray(current)
@@ -576,6 +603,195 @@ const registerWebGalAsset = (
     webgalKind: kind,
   };
   return source;
+};
+
+/** Keep model discovery in the source adapter; the runtime selects its provider. */
+const webGalFigureModel = (source: string, bounds?: readonly number[]): JsonObject => {
+  const kind = /\.jsonl(?:[?#].*)?$/iu.test(source)
+    ? "jsonl"
+    : /\.wmdl(?:[?#].*)?$/iu.test(source)
+      ? "wmdl"
+      : /\.gif(?:[?#].*)?$/iu.test(source)
+        ? "gif"
+        : /\.(mp4|webm|ogv)(?:[?#].*)?$/iu.test(source)
+          ? "video"
+          : /model3\.json(?:[?#].*)?$/iu.test(source)
+            ? "cubism3"
+            : /model\.json(?:[?#].*)?$/iu.test(source)
+              ? "cubism2"
+              : "static-portrait";
+  const profile = webGalFigureProfile(kind);
+  if (bounds && ["cubism2", "cubism3"].includes(kind)) {
+    const [x0, y0, x1, y1] = bounds;
+    profile.placement = { ...(profile.placement as JsonObject), padding: [-y0!, x1!, y1!, -x0!] };
+  }
+  if (["jsonl", "wmdl", "composite"].includes(kind))
+    return { profile, runtime: { format: "composite", sourceFormat: kind, model: source } };
+  if (["gif", "video"].includes(kind)) return { profile, runtime: { format: kind, imageUrl: source } };
+  if (/model3\.json(?:[?#].*)?$/iu.test(source)) {
+    return { profile, runtime: { format: "cubism3", model: source } };
+  }
+  if (/model\.json(?:[?#].*)?$/iu.test(source)) {
+    return { profile, runtime: { format: "cubism2", model: source } };
+  }
+  return { profile, runtime: { format: "static-portrait", imageUrl: source } };
+};
+
+const figureBounds = (statement: WebGalStatement): readonly number[] | undefined => {
+  const raw = argument(statement, "bounds");
+  if (typeof raw !== "string") return undefined;
+  const values = raw.split(",").map(Number);
+  return values.length === 4 && values.every(Number.isFinite) ? values : undefined;
+};
+
+const appearanceTransform = (
+  statement: WebGalStatement,
+  targetName: string,
+  sourceIdentity: string,
+): StoryProjectCommand => {
+  let transform: JsonObject = {};
+  const source = argument(statement, "transform");
+  if (typeof source === "string") {
+    try {
+      const value: unknown = JSON.parse(source);
+      if (value && typeof value === "object" && !Array.isArray(value)) transform = value as JsonObject;
+    } catch {}
+  }
+  return commandFrom(statement, "appearance", WEBGAL_COMMAND_TYPES.setTransform, {
+    targetName,
+    transform,
+    sourceIdentity,
+    durationMs: 0,
+    ignoreDefault: booleanArgument(statement, "ignoreDefault") === true,
+    ...(sourceIdentity ? {} : { forgetSource: true }),
+  });
+};
+
+const WEBGAL_IMPLEMENTED_ARGUMENTS: Readonly<Record<string, readonly string[]>> = {
+  changefigure: [
+    "id",
+    "left",
+    "right",
+    "clear",
+    "motion",
+    "expression",
+    "duration",
+    "enterDuration",
+    "exitDuration",
+    "enter",
+    "exit",
+    "transform",
+    "bounds",
+    "ignoreDefault",
+  ],
+  changebg: ["duration", "enterDuration", "exitDuration", "transform", "ignoreDefault"],
+  bgm: ["enter", "volume"],
+  playeffect: ["id", "volume"],
+  playvideo: [],
+};
+
+/** Persist source-conversion limits so validators still see them after import. */
+const recordWebGalFidelity = (
+  statement: WebGalStatement,
+  mapped: { commands: StoryProjectCommand[]; fidelity: StoryConversionFidelity; message: string },
+): void => {
+  const handled = WEBGAL_IMPLEMENTED_ARGUMENTS[statement.name];
+  const unimplemented = handled
+    ? statement.arguments
+        .filter(({ name }) => !["next", "when", ...handled].some((key) => key.toLowerCase() === name.toLowerCase()))
+        .map(({ name }) => name)
+    : [];
+  if (unimplemented.length) {
+    if (mapped.fidelity === "exact") mapped.fidelity = "approximate";
+    mapped.message += `; unimplemented arguments remain source-only: ${unimplemented.join(", ")}`;
+  }
+  for (const command of mapped.commands) {
+    command.extensions.webgalFidelity = {
+      status: mapped.fidelity,
+      message: mapped.message,
+      unimplementedArguments: unimplemented,
+    };
+  }
+};
+
+const webGalDialogue = (
+  statement: WebGalStatement,
+  context: WebGalVisualImportContext,
+): { commands: StoryProjectCommand[]; fidelity: StoryConversionFidelity; message: string } => {
+  const explicitSpeaker = argument(statement, "speaker");
+  const speaker =
+    booleanArgument(statement, "clear") === true
+      ? ""
+      : typeof explicitSpeaker === "string"
+        ? explicitSpeaker
+        : statement.kind === "dialogue"
+          ? statement.name
+          : "";
+  const vocal = argument(statement, "vocal");
+  const voiceSource = typeof vocal === "string" ? registerWebGalAsset(context, vocal, "vocal") : "";
+  const volume = normalizedVolume(statement);
+  const figureId = argument(statement, "figureId");
+  const lipTarget =
+    typeof figureId === "string" && figureId
+      ? figureId
+      : booleanArgument(statement, "center") === true
+        ? "fig-center"
+        : booleanArgument(statement, "right") === true
+          ? "fig-right"
+          : booleanArgument(statement, "left") === true
+            ? "fig-left"
+            : "";
+  const fontSize = argument(statement, "fontSize");
+  const fontScale = fontSize === "small" ? 155 / 205 : fontSize === "large" ? 230 / 205 : 1;
+  const ignored = statement.arguments.filter(
+    (item) =>
+      ![
+        "speaker",
+        "clear",
+        "vocal",
+        "volume",
+        "figureid",
+        "left",
+        "right",
+        "center",
+        "next",
+        "when",
+        "concat",
+        "notend",
+        "fontsize",
+      ].includes(item.name.toLowerCase()),
+  );
+  return {
+    commands: [
+      commandFrom(statement, 0, ADV_COMMAND.Talk, {
+        targetName: speaker,
+        text: statement.content.replace(/ {2,}/g, (spaces) => "\u00a0".repeat(spaces.length)),
+        talkPresentation: {
+          appendText: booleanArgument(statement, "concat") === true,
+          retainSpeaker:
+            booleanArgument(statement, "clear") !== true &&
+            typeof explicitSpeaker !== "string" &&
+            statement.kind !== "dialogue",
+          fontScale,
+          textReveal: { unit: "utf16-code-unit", unitsPerSecond: 1000 / 78 },
+        },
+        ...(voiceSource
+          ? {
+              voiceRefs: [String(vocal)],
+              voices: [{ playableUrl: voiceSource, ...(volume === undefined ? {} : { volume }) }],
+            }
+          : {}),
+        ...(lipTarget ? { lipSyncTargets: [lipTarget] } : {}),
+        ...(booleanArgument(statement, "next") === true || booleanArgument(statement, "notend") === true
+          ? { noWait: true }
+          : {}),
+      }),
+    ],
+    fidelity: ignored.length ? "approximate" : "exact",
+    message: ignored.length
+      ? `Dialogue imported; unimplemented arguments remain source-only: ${ignored.map(({ name }) => name).join(", ")}`
+      : "Dialogue and voice map to Talk with an independent lip-sync target",
+  };
 };
 
 interface WebGalLiteral {
@@ -616,7 +832,6 @@ const webGalLiteral = (source: string): WebGalLiteral => {
 
 export const normalizeWebGalSceneTarget = (source: string): string => {
   const normalized = source
-    .normalize("NFKC")
     .trim()
     .replace(/[?#].*$/, "")
     .replaceAll("\\", "/");
@@ -637,22 +852,12 @@ export const normalizeWebGalSceneTarget = (source: string): string => {
     if (part.toLocaleLowerCase("en-US") === "scene") sceneRoot = index;
   }
   const relative =
-    sceneRoot >= 0 && sceneRoot < sourceParts.length - 1
-      ? sourceParts.slice(sceneRoot + 1)
-      : sourceParts;
+    sceneRoot >= 0 && sceneRoot < sourceParts.length - 1 ? sourceParts.slice(sceneRoot + 1) : sourceParts;
   const last = relative.at(-1);
   if (last) {
-    relative[relative.length - 1] = last.replace(
-      /\.(?:txt|wg|webgal)$/iu,
-      "",
-    );
+    relative[relative.length - 1] = last.replace(/\.(?:txt|wg|webgal)$/iu, "");
   }
-  const parts = relative.map(
-    (part) =>
-      part
-        .replace(/[^a-zA-Z0-9_.\-\p{L}\p{N}]+/gu, "-")
-        .replace(/^-+|-+$/gu, "") || "scene",
-  );
+  const parts = relative.map((part) => part || "scene");
   if (outsideSceneRoot) {
     parts.unshift(`outside-scene-${outsideSceneRoot}`);
   }
@@ -660,16 +865,11 @@ export const normalizeWebGalSceneTarget = (source: string): string => {
 };
 
 interface WebGalVisualImportContext {
+  readonly animationPresets: Readonly<Record<string, readonly JsonObject[]>>;
   readonly figurePositions: Map<string, number>;
-  readonly transforms: Map<string, WebGalTransformState>;
   readonly transitionSettings: Map<string, WebGalTransitionSetting>;
   readonly assets: JsonObject;
   readonly assetRoot: string;
-}
-
-interface WebGalTransformState {
-  positionX: number;
-  positionY: number;
 }
 
 interface WebGalTransitionSetting {
@@ -689,64 +889,6 @@ interface WebGalNativeVisualSpec {
   readonly fields: JsonObject;
 }
 
-interface WebGalTransformProjection {
-  readonly specs: WebGalNativeVisualSpec[];
-  readonly mappedProperties: string[];
-  readonly unsupportedProperties: string[];
-}
-
-/**
- * The portable subset of WebGAL's stock animation table at the referenced
- * upstream commit. Presets whose defining effect is a Pixi-only filter or
- * figure scaling are deliberately absent.
- */
-const WEBGAL_PORTABLE_ANIMATION_PRESETS: Readonly<Record<string, readonly JsonObject[]>> = Object.freeze({
-  "enter-from-left": [
-    {
-      alpha: 0,
-      scale: { x: 1, y: 1 },
-      position: { x: -50, y: 0 },
-      rotation: 0,
-      blur: 5,
-      duration: 0,
-    },
-    {
-      alpha: 1,
-      scale: { x: 1, y: 1 },
-      position: { x: 0, y: 0 },
-      rotation: 0,
-      blur: 0,
-      duration: 500,
-    },
-  ],
-  "enter-from-bottom": [
-    { alpha: 0, position: { x: 0, y: 50 }, blur: 5, duration: 0 },
-    { alpha: 1, position: { x: 0, y: 0 }, blur: 0, duration: 500 },
-  ],
-  "enter-from-right": [
-    { alpha: 0, position: { x: 50, y: 0 }, blur: 5, duration: 0 },
-    { alpha: 1, position: { x: 0, y: 0 }, blur: 0, duration: 500 },
-  ],
-  shake: [
-    { position: { x: 0, y: 0 }, duration: 0 },
-    { position: { x: -100, y: 0 }, duration: 250 },
-    { position: { x: 100, y: 0 }, duration: 500 },
-    { position: { x: 0, y: 0 }, duration: 250 },
-  ],
-  enter: [
-    { alpha: 0, duration: 0 },
-    { alpha: 1, duration: 300 },
-  ],
-  exit: [
-    { alpha: 1, duration: 0 },
-    { alpha: 0, duration: 300 },
-  ],
-  blur: [
-    { blur: 0, duration: 0 },
-    { blur: 5, duration: 300 },
-  ],
-});
-
 const plainJsonObject = (value: unknown): JsonObject | undefined =>
   value && typeof value === "object" && !Array.isArray(value) ? (value as JsonObject) : undefined;
 
@@ -761,10 +903,7 @@ const parseWebGalTransform = (source: string): JsonObject | undefined => {
   }
 };
 
-const webGalVisualTarget = (
-  statement: WebGalStatement,
-  context: WebGalVisualImportContext,
-): WebGalVisualTarget => {
+const webGalVisualTarget = (statement: WebGalStatement, context: WebGalVisualImportContext): WebGalVisualTarget => {
   const authoredTarget = argument(statement, "target");
   const targetName = typeof authoredTarget === "string" && authoredTarget.trim() ? authoredTarget.trim() : "0";
   const normalized = targetName.toLowerCase();
@@ -776,279 +915,6 @@ const webGalVisualTarget = (
   return knownPosition === undefined
     ? { kind: "unknown", targetName, positionType: 0 }
     : { kind: "character", targetName, positionType: knownPosition };
-};
-
-const transformPosition = (
-  value: JsonValue | undefined,
-): { x?: number; y?: number; valid: boolean } | undefined => {
-  if (value === undefined) return undefined;
-  const object = plainJsonObject(value);
-  if (!object) return { valid: false };
-  const x = finiteJsonNumber(object.x);
-  const y = finiteJsonNumber(object.y);
-  const invalidX = object.x !== undefined && x === undefined;
-  const invalidY = object.y !== undefined && y === undefined;
-  const unknownKeys = Object.keys(object).filter((key) => key !== "x" && key !== "y");
-  return invalidX || invalidY || unknownKeys.length
-    ? { valid: false }
-    : {
-        ...(x === undefined ? {} : { x }),
-        ...(y === undefined ? {} : { y }),
-        valid: true,
-      };
-};
-
-const projectWebGalTransform = (
-  frame: JsonObject,
-  target: WebGalVisualTarget,
-  context: WebGalVisualImportContext,
-  duration: number,
-  options: { writeDefault?: boolean } = {},
-): WebGalTransformProjection => {
-  const specs: WebGalNativeVisualSpec[] = [];
-  const mapped = new Set<string>();
-  const unsupported = new Set<string>();
-  const knownTransformKeys = new Set([
-    "alpha",
-    "position",
-    "scale",
-    "rotation",
-    "blur",
-    "brightness",
-    "contrast",
-    "saturation",
-    "gamma",
-    "colorRed",
-    "colorGreen",
-    "colorBlue",
-    "bevel",
-    "bevelThickness",
-    "bevelRotation",
-    "bevelSoftness",
-    "bevelRed",
-    "bevelGreen",
-    "bevelBlue",
-    "bloom",
-    "bloomBrightness",
-    "bloomBlur",
-    "bloomThreshold",
-    "oldFilm",
-    "dotFilm",
-    "reflectionFilm",
-    "glitchFilm",
-    "rgbFilm",
-    "godrayFilm",
-    "shockwaveFilter",
-    "radiusAlphaFilter",
-    "duration",
-    "ease",
-  ]);
-
-  for (const key of Object.keys(frame)) {
-    if (!knownTransformKeys.has(key)) unsupported.add(key);
-  }
-
-  if (frame.alpha !== undefined) {
-    const alpha = finiteJsonNumber(frame.alpha);
-    if (alpha === undefined || target.kind !== "character") unsupported.add("alpha");
-    else {
-      mapped.add("alpha");
-      specs.push({
-        command: ADV_COMMAND.Alpha,
-        fields: {
-          targetName: target.targetName,
-          positionType: target.positionType,
-          canvasLayers: [2],
-          params: [Math.max(0, Math.min(1, alpha))],
-          duration,
-        },
-      });
-    }
-  }
-
-  if (frame.brightness !== undefined) {
-    const brightness = finiteJsonNumber(frame.brightness);
-    if (brightness === undefined || target.kind === "unknown") unsupported.add("brightness");
-    else {
-      mapped.add("brightness");
-      specs.push({
-        command: ADV_COMMAND.Brightness,
-        fields: {
-          ...(target.kind === "character"
-            ? { targetName: target.targetName, positionType: target.positionType }
-            : { canvasLayers: [0] }),
-          params: [brightness],
-          duration,
-        },
-      });
-    }
-  }
-
-  if (frame.blur !== undefined) {
-    const blur = finiteJsonNumber(frame.blur);
-    if (blur === undefined || target.kind === "unknown") unsupported.add("blur");
-    else {
-      mapped.add("blur");
-      specs.push({
-        command: ADV_COMMAND.DoF,
-        fields: {
-          ...(target.kind === "character"
-            ? {
-                targetName: target.targetName,
-                positionType: target.positionType,
-                canvasLayers: [2],
-              }
-            : { canvasLayers: [0] }),
-          params: [Math.max(0, blur), 6],
-          dofActive: blur > 0,
-          duration,
-        },
-      });
-    }
-  }
-
-  const position = transformPosition(frame.position);
-  if (position) {
-    if (!position.valid || target.kind !== "character") unsupported.add("position");
-    else {
-      mapped.add("position");
-      const previous = context.transforms.get(target.targetName) || { positionX: 0, positionY: 0 };
-      const next = {
-        positionX: position.x ?? (options.writeDefault ? 0 : previous.positionX),
-        positionY: position.y ?? (options.writeDefault ? 0 : previous.positionY),
-      };
-      const deltaX = next.positionX - previous.positionX;
-      const deltaY = next.positionY - previous.positionY;
-      context.transforms.set(target.targetName, next);
-      if (deltaX || deltaY) {
-        specs.push({
-          command: ADV_COMMAND.MoveToDirection,
-          fields: {
-            targetName: target.targetName,
-            positionType: target.positionType,
-            params: [deltaX / 96, deltaY ? -deltaY / 54 : 0, 0],
-            duration,
-          },
-        });
-      }
-    }
-  }
-
-  if (options.writeDefault && target.kind !== "unknown") {
-    if (frame.alpha === undefined && target.kind === "character") {
-      mapped.add("alpha");
-      specs.unshift({
-        command: ADV_COMMAND.Alpha,
-        fields: {
-          targetName: target.targetName,
-          positionType: target.positionType,
-          canvasLayers: [2],
-          params: [1],
-          duration,
-        },
-      });
-    } else if (frame.alpha === undefined) {
-      unsupported.add("alpha");
-    }
-    if (frame.brightness === undefined) {
-      mapped.add("brightness");
-      specs.unshift({
-        command: ADV_COMMAND.Brightness,
-        fields: {
-          ...(target.kind === "character"
-            ? { targetName: target.targetName, positionType: target.positionType }
-            : { canvasLayers: [0] }),
-          params: [1],
-          duration,
-        },
-      });
-    }
-    if (frame.blur === undefined) {
-      mapped.add("blur");
-      specs.unshift({
-        command: ADV_COMMAND.DoF,
-        fields: {
-          ...(target.kind === "character"
-            ? {
-                targetName: target.targetName,
-                positionType: target.positionType,
-                canvasLayers: [2],
-              }
-            : { canvasLayers: [0] }),
-          params: [0, 6],
-          dofActive: false,
-          duration,
-        },
-      });
-    }
-    if (frame.position === undefined && target.kind === "character") {
-      mapped.add("position");
-      const previous = context.transforms.get(target.targetName) || { positionX: 0, positionY: 0 };
-      context.transforms.set(target.targetName, { positionX: 0, positionY: 0 });
-      if (previous.positionX || previous.positionY) {
-        specs.unshift({
-          command: ADV_COMMAND.MoveToDirection,
-          fields: {
-            targetName: target.targetName,
-            positionType: target.positionType,
-            params: [-previous.positionX / 96, previous.positionY / 54, 0],
-            duration,
-          },
-        });
-      }
-    } else if (frame.position === undefined) {
-      unsupported.add("position");
-    }
-    for (const property of [
-      "scale",
-      "rotation",
-      "contrast",
-      "saturation",
-      "gamma",
-      "color channels",
-      "Pixi filters",
-    ]) {
-      if (frame[property] === undefined) unsupported.add(property);
-    }
-  }
-
-  for (const key of [
-    "scale",
-    "rotation",
-    "contrast",
-    "saturation",
-    "gamma",
-    "colorRed",
-    "colorGreen",
-    "colorBlue",
-    "bevel",
-    "bevelThickness",
-    "bevelRotation",
-    "bevelSoftness",
-    "bevelRed",
-    "bevelGreen",
-    "bevelBlue",
-    "bloom",
-    "bloomBrightness",
-    "bloomBlur",
-    "bloomThreshold",
-    "oldFilm",
-    "dotFilm",
-    "reflectionFilm",
-    "glitchFilm",
-    "rgbFilm",
-    "godrayFilm",
-    "shockwaveFilter",
-    "radiusAlphaFilter",
-  ]) {
-    if (frame[key] !== undefined) unsupported.add(key);
-  }
-
-  return {
-    specs,
-    mappedProperties: [...mapped],
-    unsupportedProperties: [...unsupported],
-  };
 };
 
 const annotateWebGalVisualMapping = (
@@ -1074,7 +940,7 @@ const sequencedVisualCommands = (
   specs: readonly WebGalNativeVisualSpec[],
   suffix: string,
 ): StoryProjectCommand[] => {
-  const sourceNoWait = argument(statement, "next") !== undefined;
+  const sourceNoWait = booleanArgument(statement, "next") === true;
   return specs.map((spec, index) =>
     commandFrom(statement, `${suffix}-${index}`, spec.command, {
       ...spec.fields,
@@ -1082,11 +948,6 @@ const sequencedVisualCommands = (
     }),
   );
 };
-
-const timelineEpisode = (spec: WebGalNativeVisualSpec): JsonObject => ({
-  command: spec.command,
-  ...spec.fields,
-});
 
 interface WebGalPortableAnimationProjection {
   readonly command: StoryProjectCommand;
@@ -1103,44 +964,23 @@ const projectPortableAnimationTimeline = (
   suffix: string | number,
   noWait: boolean,
 ): WebGalPortableAnimationProjection | undefined => {
-  const preset = WEBGAL_PORTABLE_ANIMATION_PRESETS[animationName.toLowerCase()];
+  const preset = context.animationPresets[animationName] ?? WEBGAL_ANIMATION_PRESETS[animationName.toLowerCase()];
   if (!preset) return undefined;
-  const signals: JsonObject[] = [];
-  const mapped = new Set<string>();
-  const unsupported = new Set<string>();
-  const writeDefault = booleanArgument(statement, "writeDefault") === true;
-  let time = 0;
-  for (const frame of preset) {
-    const rawDuration = finiteJsonNumber(frame.duration);
-    const duration = Math.max(0, rawDuration ?? 0) / 1000;
-    const projection = projectWebGalTransform(frame, target, context, duration, { writeDefault });
-    projection.mappedProperties.forEach((key) => mapped.add(key));
-    projection.unsupportedProperties.forEach((key) => unsupported.add(key));
-    for (const spec of projection.specs) {
-      signals.push({ time, episode: timelineEpisode(spec) });
-    }
-    time += duration;
-  }
-  if (!mapped.size || !signals.length) return undefined;
-  const command = commandFrom(statement, suffix, ADV_COMMAND.Timeline, {
+  const keys = [...new Set(preset.flatMap((frame) => Object.keys(frame)))];
+  const unsupported = keys.filter((key) => !WEBGAL_TRANSFORM_PROPERTIES.has(key));
+  const mapped = keys.filter((key) => WEBGAL_TRANSFORM_PROPERTIES.has(key));
+  const command = commandFrom(statement, suffix, WEBGAL_COMMAND_TYPES.setTempAnimation, {
     targetName: target.targetName,
-    timeline: {
-      duration: time,
-      signals,
-    },
+    frames: cloneStoryValue([...preset]),
     webgalAnimationPreset: animationName,
-    ...(noWait ? { noWait: true } : {}),
+    ...webGalAnimationFlags(statement),
+    noWait,
   });
   return {
-    command: annotateWebGalVisualMapping(
-      [command],
-      statement,
-      [...mapped],
-      [...unsupported],
-    )[0]!,
-    mappedProperties: [...mapped],
-    unsupportedProperties: [...unsupported],
-    duration: time,
+    command,
+    mappedProperties: mapped,
+    unsupportedProperties: unsupported,
+    duration: preset.reduce((sum, frame) => sum + Math.max(0, finiteJsonNumber(frame.duration) ?? 0), 0) / 1000,
   };
 };
 
@@ -1149,46 +989,26 @@ const mapSetAnimation = (
   context: WebGalVisualImportContext,
 ): { commands: StoryProjectCommand[]; fidelity: StoryConversionFidelity; message: string } => {
   const animationName = statement.content.trim();
-  if (!WEBGAL_PORTABLE_ANIMATION_PRESETS[animationName.toLowerCase()]) {
-    return {
-      commands: [commandFrom(statement, 0, null, {})],
-      fidelity: "preserved-only",
-      message:
-        `setAnimation '${animationName}' is preserved because it depends on a project animation ` +
-        "or defining Pixi-only scale/filter channels",
-    };
-  }
-  if (booleanArgument(statement, "keep") === true) {
-    return {
-      commands: [commandFrom(statement, 0, null, {})],
-      fidelity: "preserved-only",
-      message: `setAnimation '${animationName}' is preserved because Vega Timeline has no equivalent held-animation lifecycle`,
-    };
-  }
-  const target = webGalVisualTarget(statement, context);
   const projection = projectPortableAnimationTimeline(
     statement,
     context,
-    target,
+    webGalVisualTarget(statement, context),
     animationName,
     0,
-    argument(statement, "next") !== undefined,
+    booleanArgument(statement, "next") === true || booleanArgument(statement, "keep") === true,
   );
-  if (!projection) {
+  if (!projection)
     return {
       commands: [commandFrom(statement, 0, null, {})],
       fidelity: "preserved-only",
-      message: `setAnimation '${animationName}' is preserved because target '${target.targetName}' has no safe native projection`,
+      message: `Animation '${animationName}' is missing from the imported animation library`,
     };
-  }
   return {
     commands: [projection.command],
-    fidelity: "approximate",
-    message:
-      `setAnimation '${animationName}' maps ${projection.mappedProperties.join(", ")} to a native Vega Timeline` +
-      (projection.unsupportedProperties.length
-        ? `; ${projection.unsupportedProperties.join(", ")} remains source-only`
-        : ""),
+    fidelity: projection.unsupportedProperties.length ? "approximate" : "exact",
+    message: projection.unsupportedProperties.length
+      ? `Animation retains unsupported channels: ${projection.unsupportedProperties.join(", ")}`
+      : `Animation '${animationName}' retains its complete keyframes and playback options`,
   };
 };
 
@@ -1197,14 +1017,11 @@ const mapSetTransition = (
   context: WebGalVisualImportContext,
 ): { commands: StoryProjectCommand[]; fidelity: StoryConversionFidelity; message: string } => {
   const authoredTarget = argument(statement, "target");
-  const targetName =
-    typeof authoredTarget === "string" && authoredTarget.trim() ? authoredTarget.trim() : "0";
+  const targetName = typeof authoredTarget === "string" && authoredTarget.trim() ? authoredTarget.trim() : "0";
   const authoredEnter = argument(statement, "enter");
   const authoredExit = argument(statement, "exit");
-  const enterAnimation =
-    typeof authoredEnter === "string" && authoredEnter.trim() ? authoredEnter.trim() : undefined;
-  const exitAnimation =
-    typeof authoredExit === "string" && authoredExit.trim() ? authoredExit.trim() : undefined;
+  const enterAnimation = typeof authoredEnter === "string" && authoredEnter.trim() ? authoredEnter.trim() : undefined;
+  const exitAnimation = typeof authoredExit === "string" && authoredExit.trim() ? authoredExit.trim() : undefined;
   const ignoreDefault = booleanArgument(statement, "ignoreDefault") === true;
   const previous = context.transitionSettings.get(targetName);
   const nextEnter = enterAnimation ?? previous?.enterAnimation;
@@ -1216,7 +1033,9 @@ const mapSetTransition = (
   });
   const animations = [enterAnimation, exitAnimation].filter((value): value is string => Boolean(value));
   const portable = animations.filter(
-    (animation) => WEBGAL_PORTABLE_ANIMATION_PRESETS[animation.toLowerCase()] !== undefined,
+    (animation) =>
+      context.animationPresets[animation] !== undefined ||
+      WEBGAL_ANIMATION_PRESETS[animation.toLowerCase()] !== undefined,
   );
   const sourceOnly = animations.filter((animation) => !portable.includes(animation));
   if (animations.length && portable.length === 0) {
@@ -1249,6 +1068,49 @@ const mapSetTransition = (
   };
 };
 
+const WEBGAL_TRANSFORM_PROPERTIES = new Set([
+  "position",
+  "scale",
+  "rotation",
+  "alpha",
+  "duration",
+  "ease",
+  "blur",
+  "brightness",
+  "contrast",
+  "saturation",
+  "gamma",
+  "colorRed",
+  "colorGreen",
+  "colorBlue",
+  "bloom",
+  "bloomBrightness",
+  "bloomBlur",
+  "bloomThreshold",
+  "bevel",
+  "bevelThickness",
+  "bevelRotation",
+  "bevelSoftness",
+  "bevelRed",
+  "bevelGreen",
+  "bevelBlue",
+  "oldFilm",
+  "dotFilm",
+  "reflectionFilm",
+  "glitchFilm",
+  "rgbFilm",
+  "godrayFilm",
+  "shockwaveFilter",
+  "radiusAlphaFilter",
+]);
+const webGalAnimationFlags = (statement: WebGalStatement): JsonObject => ({
+  writeDefault: booleanArgument(statement, "writeDefault") === true,
+  ignoreDefault: booleanArgument(statement, "ignoreDefault") === true,
+  parallel: booleanArgument(statement, "parallel") === true,
+  keep: booleanArgument(statement, "keep") === true,
+  noWait: booleanArgument(statement, "next") === true || booleanArgument(statement, "keep") === true,
+});
+
 const mapSetTransform = (
   statement: WebGalStatement,
   context: WebGalVisualImportContext,
@@ -1261,44 +1123,21 @@ const mapSetTransform = (
       message: "setTransform is preserved because its transform is not a JSON object",
     };
   }
-  const target = webGalVisualTarget(statement, context);
-  const duration = Math.max(0, numericArgument(statement, "duration") ?? 500) / 1000;
-  const writeDefault = booleanArgument(statement, "writeDefault") === true;
-  const projection = projectWebGalTransform(frame, target, context, duration, { writeDefault });
-  if (!projection.mappedProperties.length) {
-    return {
-      commands: [commandFrom(statement, 0, null, {})],
-      fidelity: "preserved-only",
-      message: `setTransform is preserved because Vega has no safe native mapping for ${
-        projection.unsupportedProperties.join(", ") || `target '${target.targetName}'`
-      }`,
-    };
-  }
-  const specs =
-    projection.specs.length > 0
-      ? projection.specs
-      : [
-          {
-            command: ADV_COMMAND.Timeline,
-            fields: { timeline: { duration, signals: [] } },
-          },
-        ];
-  const commands = annotateWebGalVisualMapping(
-    sequencedVisualCommands(statement, specs, "transform"),
-    statement,
-    projection.mappedProperties,
-    projection.unsupportedProperties,
-  );
+  const unsupported = Object.keys(frame).filter((key) => !WEBGAL_TRANSFORM_PROPERTIES.has(key));
   return {
-    commands,
-    fidelity: "approximate",
-    message: `setTransform maps ${projection.mappedProperties.join(", ")} to native Vega commands${
-      writeDefault ? " and resets Vega's portable transform channels" : ""
-    }${
-      projection.unsupportedProperties.length
-        ? `; ${projection.unsupportedProperties.join(", ")} remains source-only`
-        : ""
-    }`,
+    commands: [
+      commandFrom(statement, 0, WEBGAL_COMMAND_TYPES.setTransform, {
+        targetName: String(argument(statement, "target") ?? "0"),
+        transform: cloneStoryValue(frame),
+        durationMs: Math.max(0, numericArgument(statement, "duration") ?? 500),
+        ease: String(argument(statement, "ease") ?? ""),
+        ...webGalAnimationFlags(statement),
+      }),
+    ],
+    fidelity: unsupported.length ? "approximate" : "exact",
+    message: unsupported.length
+      ? `Transform retains unsupported channels: ${unsupported.join(", ")}`
+      : "Transform retains pixel coordinates, independent scales, radians, filters and animation options",
   };
 };
 
@@ -1319,56 +1158,21 @@ const mapSetTempAnimation = (
       message: "setTempAnimation is preserved because its timeline is not an array of JSON objects",
     };
   }
-  if (booleanArgument(statement, "keep") === true) {
-    return {
-      commands: [commandFrom(statement, 0, null, {})],
-      fidelity: "preserved-only",
-      message: "setTempAnimation is preserved because Vega Timeline has no equivalent held-animation lifecycle",
-    };
-  }
-  const target = webGalVisualTarget(statement, context);
-  const signals: JsonObject[] = [];
-  const mapped = new Set<string>();
-  const unsupported = new Set<string>();
-  const writeDefault = booleanArgument(statement, "writeDefault") === true;
-  let time = 0;
-  for (const value of values) {
-    const frame = value as JsonObject;
-    const rawDuration = finiteJsonNumber(frame.duration);
-    if (frame.duration !== undefined && rawDuration === undefined) unsupported.add("duration");
-    const duration = Math.max(0, rawDuration ?? 0) / 1000;
-    const projection = projectWebGalTransform(frame, target, context, duration, { writeDefault });
-    projection.mappedProperties.forEach((key) => mapped.add(key));
-    projection.unsupportedProperties.forEach((key) => unsupported.add(key));
-    for (const spec of projection.specs) {
-      signals.push({ time, episode: timelineEpisode(spec) });
-    }
-    time += duration;
-  }
-  if (!mapped.size) {
-    return {
-      commands: [commandFrom(statement, 0, null, {})],
-      fidelity: "preserved-only",
-      message: `setTempAnimation is preserved because Vega has no safe native mapping for ${
-        [...unsupported].join(", ") || `target '${target.targetName}'`
-      }`,
-    };
-  }
-  const command = commandFrom(statement, 0, ADV_COMMAND.Timeline, {
-    targetName: target.targetName,
-    timeline: {
-      duration: time,
-      signals,
-    },
-    webgalAnimationFrames: cloneStoryValue(values as JsonValue[]),
-    ...(argument(statement, "next") === undefined ? {} : { noWait: true }),
-  });
+  const unsupported = [
+    ...new Set(values.flatMap((frame) => Object.keys(frame).filter((key) => !WEBGAL_TRANSFORM_PROPERTIES.has(key)))),
+  ];
   return {
-    commands: annotateWebGalVisualMapping([command], statement, [...mapped], [...unsupported]),
-    fidelity: "approximate",
-    message: `setTempAnimation maps ${[...mapped].join(", ")} to a native Vega Timeline${
-      unsupported.size ? `; ${[...unsupported].join(", ")} remains source-only` : ""
-    }`,
+    commands: [
+      commandFrom(statement, 0, WEBGAL_COMMAND_TYPES.setTempAnimation, {
+        targetName: String(argument(statement, "target") ?? "0"),
+        frames: cloneStoryValue(values as JsonValue[]),
+        ...webGalAnimationFlags(statement),
+      }),
+    ],
+    fidelity: unsupported.length ? "approximate" : "exact",
+    message: unsupported.length
+      ? `Animation retains unsupported channels: ${unsupported.join(", ")}`
+      : "Animation retains frame timing, easing, channels and animation options",
   };
 };
 
@@ -1433,12 +1237,7 @@ const mapSetComplexAnimation = (
     };
   }
   return {
-    commands: annotateWebGalVisualMapping(
-      sequencedVisualCommands(statement, specs, "complex"),
-      statement,
-      mapped,
-      [],
-    ),
+    commands: annotateWebGalVisualMapping(sequencedVisualCommands(statement, specs, "complex"), statement, mapped, []),
     fidelity: "approximate",
     message: `${statement.content} maps to native Vega ${mapped.join(" and ")} commands with different easing`,
   };
@@ -1457,43 +1256,11 @@ const mapStatement = (
     };
   }
   if (statement.kind === "dialogue") {
-    const extraArgs = statement.arguments.filter((item) => !["next", "when"].includes(item.name.toLowerCase()));
-    const fidelity: StoryConversionFidelity = extraArgs.length ? "approximate" : "exact";
-    return {
-      commands: [
-        commandFrom(statement, 0, ADV_COMMAND.Talk, {
-          targetName: statement.name,
-          text: statement.content,
-          ...(argument(statement, "next") === undefined ? {} : { noWait: true }),
-        }),
-      ],
-      fidelity,
-      message: extraArgs.length
-        ? "Dialogue imported; WebGAL-only dialogue arguments remain in source metadata"
-        : "Dialogue maps to Talk",
-    };
+    return webGalDialogue(statement, context);
   }
   switch (statement.name) {
-    case "say": {
-      const speaker = argument(statement, "speaker");
-      const ignored = statement.arguments.filter((item) =>
-        !["speaker", "next", "when"].includes(item.name.toLowerCase()),
-      );
-      const fidelity: StoryConversionFidelity = ignored.length ? "approximate" : "exact";
-      return {
-        commands: [
-          commandFrom(statement, 0, ADV_COMMAND.Talk, {
-            targetName: typeof speaker === "string" ? speaker : "",
-            text: statement.content,
-            ...(argument(statement, "next") === undefined ? {} : { noWait: true }),
-          }),
-        ],
-        fidelity,
-        message: ignored.length
-          ? "Explicit say imported; WebGAL-only dialogue arguments remain in source metadata"
-          : "Explicit say maps to Talk",
-      };
-    }
+    case "say":
+      return webGalDialogue(statement, context);
     case "bgm": {
       const enter = numericArgument(statement, "enter");
       const volume = normalizedVolume(statement);
@@ -1512,7 +1279,7 @@ const mapStatement = (
               : {}),
             ...(enter === undefined ? {} : { params: [Math.max(0, enter) / 1000] }),
             ...(volume === undefined ? {} : { volume }),
-            ...(argument(statement, "next") === undefined ? {} : { noWait: true }),
+            ...(booleanArgument(statement, "next") !== true ? {} : { noWait: true }),
           }),
         ],
         fidelity: "exact",
@@ -1539,7 +1306,7 @@ const mapStatement = (
               : {}),
             ...(typeof id === "string" && id ? { targetName: id } : {}),
             ...(volume === undefined ? {} : { volume }),
-            ...(argument(statement, "next") === undefined ? {} : { noWait: true }),
+            ...(booleanArgument(statement, "next") !== true ? {} : { noWait: true }),
           }),
         ],
         fidelity: "exact",
@@ -1555,7 +1322,7 @@ const mapStatement = (
           commandFrom(statement, 0, ADV_COMMAND.Movie, {
             videoRef: statement.content,
             ...(source ? { video: { playableUrl: source } } : {}),
-            ...(argument(statement, "next") === undefined ? {} : { noWait: true }),
+            ...(booleanArgument(statement, "next") !== true ? {} : { noWait: true }),
           }),
         ],
         fidelity: "exact",
@@ -1599,9 +1366,7 @@ const mapStatement = (
       const projectedChoices = choices.map((choice, index) => ({
         choiceValue: index,
         text: choice.text,
-        nextKey: choice.jumpToScene
-          ? `__altair_webgal_scene_choice_${statement.line}_${index}`
-          : choice.target,
+        nextKey: choice.jumpToScene ? `__altair_webgal_scene_choice_${statement.line}_${index}` : choice.target,
         ...(choice.showCondition ? { visibleWhen: choice.showCondition } : {}),
         ...(choice.enableCondition ? { enabledWhen: choice.enableCondition } : {}),
       }));
@@ -1640,15 +1405,21 @@ const mapStatement = (
       };
     }
     case "changebg": {
-      const duration = durationSecondsArgument(statement);
+      const clearing = emptyWebGalAsset(statement.content);
+      const specificDuration = numericArgument(statement, clearing ? "exitDuration" : "enterDuration");
+      const duration =
+        specificDuration === undefined
+          ? (durationSecondsArgument(statement) ?? (clearing ? 1.5 : 1))
+          : Math.max(0, specificDuration) / 1000;
       const source = registerWebGalAsset(context, statement.content, "background");
       return {
         commands: [
+          appearanceTransform(statement, "bg-main", source),
           commandFrom(statement, 0, ADV_COMMAND.Stage, {
             backgroundRef: statement.content,
             ...(source ? { background: { url: source } } : {}),
             ...(duration === undefined ? {} : { duration }),
-            ...(argument(statement, "next") === undefined ? {} : { noWait: true }),
+            ...(booleanArgument(statement, "next") !== true ? {} : { noWait: true }),
           }),
         ],
         fidelity: "exact",
@@ -1661,9 +1432,26 @@ const mapStatement = (
       const id = argument(statement, "id");
       const motion = argument(statement, "motion");
       const expression = argument(statement, "expression");
-      const duration = durationSecondsArgument(statement);
+      const removing = emptyWebGalAsset(statement.content) || booleanArgument(statement, "clear") === true;
+      const duration =
+        Math.max(
+          0,
+          numericArgument(statement, removing ? "exitDuration" : "enterDuration") ??
+            (removing ? 450 : (numericArgument(statement, "duration") ?? 300)),
+        ) / 1000;
       const targetName = typeof id === "string" && id ? id : defaultFigureTarget(statement);
       const positionType = positionFromArguments(statement);
+      if (
+        !removing &&
+        /\.(?:json|skel)(?:[?#].*)?$/iu.test(statement.content) &&
+        !/model3?\.json(?:[?#].*)?$/iu.test(statement.content)
+      ) {
+        return {
+          commands: [commandFrom(statement, 0, null, {})],
+          fidelity: "preserved-only",
+          message: "The figure needs a manifest or aggregate-model adapter; it must not be decoded as a static image",
+        };
+      }
       context.figurePositions.set(targetName, positionType);
       const configuredTransition = context.transitionSettings.get(targetName);
       const authoredEnter = argument(statement, "enter");
@@ -1676,7 +1464,7 @@ const mapStatement = (
         typeof authoredExit === "string" && authoredExit.trim()
           ? authoredExit.trim()
           : configuredTransition?.exitAnimation;
-      if (emptyWebGalAsset(statement.content)) {
+      if (emptyWebGalAsset(statement.content) || booleanArgument(statement, "clear") === true) {
         const projectedExit = exitAnimation
           ? projectPortableAnimationTimeline(
               statement,
@@ -1690,12 +1478,13 @@ const mapStatement = (
         context.transitionSettings.delete(targetName);
         return {
           commands: [
+            appearanceTransform(statement, targetName, ""),
             ...(projectedExit ? [projectedExit.command] : []),
             commandFrom(statement, "out", ADV_COMMAND.Out, {
               targetName,
               positionType,
               ...(projectedExit ? { duration: 0 } : duration === undefined ? {} : { duration }),
-              ...(argument(statement, "next") === undefined ? {} : { noWait: true }),
+              ...(booleanArgument(statement, "next") !== true ? {} : { noWait: true }),
             }),
           ],
           fidelity: exitAnimation ? "approximate" : "exact",
@@ -1706,7 +1495,6 @@ const mapStatement = (
               : "WebGAL's none/empty figure command maps to removing the target portrait",
         };
       }
-      context.transforms.set(targetName, { positionX: 0, positionY: 0 });
       const source = registerWebGalAsset(context, statement.content, "figure");
       const presentation = {
         ...(typeof motion === "string" && motion ? { motionName: motion } : {}),
@@ -1719,21 +1507,17 @@ const mapStatement = (
             { kind: "character", targetName, positionType },
             enterAnimation,
             "enter-transition",
-            argument(statement, "next") !== undefined,
+            booleanArgument(statement, "next") === true,
           )
         : undefined;
       return {
         commands: [
+          appearanceTransform(statement, targetName, source),
           commandFrom(statement, "character", ADV_COMMAND.Character, {
             targetName,
             characterKey: statement.content,
             figureRef: statement.content,
-            characterModel: {
-              runtime: {
-                format: "static-portrait",
-                imageUrl: source,
-              },
-            },
+            characterModel: webGalFigureModel(source, figureBounds(statement)),
             positionType,
             ...presentation,
             noWait: true,
@@ -1743,7 +1527,7 @@ const mapStatement = (
             positionType,
             ...presentation,
             ...(projectedEnter ? { duration: 0 } : duration === undefined ? {} : { duration }),
-            ...(projectedEnter || argument(statement, "next") === undefined ? {} : { noWait: true }),
+            ...(projectedEnter || booleanArgument(statement, "next") !== true ? {} : { noWait: true }),
           }),
           ...(projectedEnter ? [projectedEnter.command] : []),
         ],
@@ -1752,7 +1536,35 @@ const mapStatement = (
           ? `Figure command registers the portrait and runs portable '${enterAnimation}' channels`
           : enterAnimation
             ? `Figure command displays the portrait; project-defined or Pixi-only enter '${enterAnimation}' remains source-only`
-            : "Figure command registers and displays a packaged portable portrait",
+            : /model3?\.json(?:[?#].*)?$/iu.test(source)
+              ? "Figure command registers a Cubism manifest; playback requires the Cubism provider"
+              : "Figure command registers and displays a packaged portable portrait",
+      };
+    }
+    case "pixiinit":
+      return {
+        commands: [commandFrom(statement, 0, WEBGAL_COMMAND_TYPES.pixiInit, {})],
+        fidelity: "exact",
+        message: "Screen performs are cleared",
+      };
+    case "pixiperform": {
+      const aliases: Record<string, string> = {
+        rain: "rain",
+        snow: "snow",
+        heavysnow: "heavy-snow",
+        cherryblossoms: "petals",
+      };
+      const action = aliases[statement.content.trim().toLowerCase()];
+      if (!action)
+        return {
+          commands: [commandFrom(statement, 0, null, {})],
+          fidelity: "preserved-only",
+          message: `A perform plugin is required for ${statement.content}`,
+        };
+      return {
+        commands: [commandFrom(statement, 0, WEBGAL_COMMAND_TYPES.pixiPerform, { perform: { action } })],
+        fidelity: "exact",
+        message: "Screen perform uses layered sprites",
       };
     }
     case "setanimation":
@@ -1766,20 +1578,28 @@ const mapStatement = (
     case "setcomplexanimation":
       return mapSetComplexAnimation(statement, context);
     case "settextbox": {
-      const hidden = statement.content.trim().toLowerCase() === "hide";
+      const hidden = statement.content === "hide";
       return {
         commands: [
-          commandFrom(statement, 0, hidden ? ADV_COMMAND.Talk : ADV_COMMAND.Delay, {
-            ...(hidden ? { targetName: "", text: "" } : { duration: 0 }),
-            webgalTextboxVisibility: hidden ? "hidden" : "visible",
+          commandFrom(statement, 0, VEGA_SYSTEM_OPCODE.SetDialogueVisibility, {
+            enabled: !hidden,
           }),
         ],
-        fidelity: "approximate",
-        message: hidden
-          ? "setTextbox:hide maps to Vega's native empty Talk clear; restoring the previous visible text remains source-only"
-          : "setTextbox visibility is restored for following native Talk commands; Vega does not resurrect the previous text",
+        fidelity: "exact",
+        message: "Dialogue visibility changes without clearing its text or speaker",
       };
     }
+    case "filmmode":
+      return {
+        commands: [
+          commandFrom(statement, 0, WEBGAL_COMMAND_TYPES.filmMode, {
+            content: statement.content,
+            enabled: statement.content !== "" && statement.content !== "none",
+          }),
+        ],
+        fidelity: "exact",
+        message: "Cinematic dialogue presentation is selected",
+      };
     case "setvar": {
       const separator = statement.content.indexOf("=");
       const variable = separator < 0 ? "" : statement.content.slice(0, separator).trim();
@@ -1929,7 +1749,7 @@ const mapStatement = (
         commands: [
           commandFrom(statement, 0, ADV_COMMAND.Subtitles, {
             text: statement.content,
-            ...(argument(statement, "next") === undefined ? {} : { noWait: true }),
+            ...(booleanArgument(statement, "next") !== true ? {} : { noWait: true }),
           }),
         ],
         fidelity: "approximate",
@@ -1954,20 +1774,18 @@ const importWebGalPlain = (
 ): StoryImportResult => {
   const parsed = parseWebGalScene(
     input,
-    options.additionalCommandNames === undefined
-      ? {}
-      : { additionalCommandNames: options.additionalCommandNames },
+    options.additionalCommandNames === undefined ? {} : { additionalCommandNames: options.additionalCommandNames },
   );
   const diagnostics = [...parsed.diagnostics];
   const commands: StoryProjectCommand[] = [];
   const comments: JsonValue[] = [];
   const context: WebGalVisualImportContext = {
+    animationPresets: options.animationPresets ?? {},
     figurePositions: new Map([
       ["fig-left", 1],
       ["fig-center", 5],
       ["fig-right", 9],
     ]),
-    transforms: new Map(),
     transitionSettings: new Map(),
     assets: {},
     assetRoot: normalizedWebGalAssetRoot(options.assetRoot),
@@ -1980,10 +1798,11 @@ const importWebGalPlain = (
       continue;
     }
     const mapped = mapStatement(statement, context);
+    recordWebGalFidelity(statement, mapped);
     const path = `line:${statement.line}`;
     diagnostics.push(
       storyDiagnostic(
-        mapped.fidelity === "unsupported" || mapped.fidelity === "preserved-only" ? "warning" : "info",
+        mapped.fidelity === "exact" ? "info" : "warning",
         `webgal.import.${mapped.fidelity}`,
         path,
         mapped.message,
@@ -1995,8 +1814,7 @@ const importWebGalPlain = (
   }
   const sceneId = options.sceneId ?? "scene-main";
   const originalComments = cloneStoryValue(comments);
-  const sourceText =
-    originalText ?? (typeof input === "string" ? input : new TextDecoder().decode(input));
+  const sourceText = originalText ?? (typeof input === "string" ? input : new TextDecoder().decode(input));
   const project: StoryProject = {
     version: STORY_PROJECT_VERSION,
     meta: {
@@ -2020,7 +1838,10 @@ const importWebGalPlain = (
       },
     ],
     assets: context.assets,
-    runtime: {},
+    plugins: [
+      { id: "haneoka.webgal-runtime", version: "0.1.0", required: true, permissions: ["render:webgl", "ui:dom"] },
+    ],
+    runtime: webGalRuntimeLayout(),
     storyFields: {},
     extensions: { source: { format: "webgal" } },
   };
@@ -2199,11 +2020,23 @@ const rawArgumentTokens = (raw: string | undefined): RawWebGalArgumentToken[] =>
 };
 
 const argumentFieldValue = (
-  command: number | null,
+  command: number | string | null,
   name: string,
   fields: JsonObject,
 ): { known: boolean; value: JsonValue | undefined } => {
   const normalized = name.toLowerCase();
+  if (command === WEBGAL_COMMAND_TYPES.setTransform || command === WEBGAL_COMMAND_TYPES.setTempAnimation) {
+    const keys: Record<string, string> = {
+      duration: "durationMs",
+      ease: "ease",
+      writedefault: "writeDefault",
+      ignoredefault: "ignoreDefault",
+      parallel: "parallel",
+      keep: "keep",
+    };
+    const key = keys[normalized];
+    if (key) return { known: true, value: fields[key] };
+  }
   if (normalized === "next") return { known: true, value: fields.noWait === true };
   if (normalized === "target") return { known: true, value: fields.targetName };
   if (normalized === "speaker") return { known: true, value: fields.targetName };
@@ -2345,8 +2178,15 @@ export interface SerializeWebGalResult {
   diagnostics: StoryDiagnostic[];
 }
 
-/** Export what WebGAL can carry and emit explicit comments for everything else. */
-export const serializeWebGal = (project: StoryProject, options: SerializeWebGalOptions = {}): SerializeWebGalResult => {
+interface InternalSerializeWebGalResult extends SerializeWebGalResult {
+  losslessEnvelope?: WebGalLosslessEnvelope;
+}
+
+const serializeWebGalInternal = (
+  project: StoryProject,
+  options: SerializeWebGalOptions = {},
+  captureSceneContext = false,
+): InternalSerializeWebGalResult => {
   assertValidStoryProject(project);
   const sceneId = options.sceneId ?? project.entrySceneId;
   const scene = project.scenes.find((item) => item.id === sceneId);
@@ -2357,10 +2197,11 @@ export const serializeWebGal = (project: StoryProject, options: SerializeWebGalO
   const localeIndex = options.localeIndex ?? 0;
   const preserveSource = options.preserveUnchangedSource !== false;
   const losslessScope = options.losslessMetadata || false;
+  const captureLossless = Boolean(losslessScope) || captureSceneContext;
   const unchangedOriginalText = originalWebGalTextIfUnchanged(
     scene,
     preserveSource,
-    losslessScope,
+    captureLossless ? "scene" : false,
     options.lineEnding,
   );
   if (unchangedOriginalText !== undefined) {
@@ -2400,15 +2241,11 @@ export const serializeWebGal = (project: StoryProject, options: SerializeWebGalO
       if (target && asset) characterAssetByTarget.set(target, asset);
       if (target) characterPositionByTarget.set(target, finiteNumber(command.fields.positionType, 5));
     }
-    if (
-      command.source?.format === "webgal" &&
-      command.source.raw &&
-      command.extensions.webgalOpaque !== undefined
-    ) {
+    if (command.source?.format === "webgal" && command.source.raw && command.extensions.webgalOpaque !== undefined) {
       const ids = [command.id];
       if (losslessScope) lines.push(commandMetadataLine(ids));
       lines.push(command.source.raw);
-      if (losslessScope) losslessBlocks.push({ ids, projection: command.source.raw });
+      if (captureLossless) losslessBlocks.push({ ids, projection: command.source.raw });
       diagnostics.push(
         storyDiagnostic(
           "warning",
@@ -2440,16 +2277,16 @@ export const serializeWebGal = (project: StoryProject, options: SerializeWebGalO
         const ids = scene.commands.slice(start, end + 1).map((item) => item.id);
         if (losslessScope) lines.push(commandMetadataLine(ids));
         lines.push(raw);
-        if (losslessScope) losslessBlocks.push({ ids, projection: raw });
+        if (captureLossless) losslessBlocks.push({ ids, projection: raw });
         diagnostics.push(
           storyDiagnostic(
-          "info",
-          "webgal.export.exact",
-          path,
-          "Original WebGAL statement preserved",
-          "exact",
-          command.source.line,
-        ),
+            "info",
+            "webgal.export.exact",
+            path,
+            "Original WebGAL statement preserved",
+            "exact",
+            command.source.line,
+          ),
         );
         index = end;
         continue;
@@ -2911,11 +2748,7 @@ export const serializeWebGal = (project: StoryProject, options: SerializeWebGalO
             )
           : [];
         if (webgalFrames.length) {
-          output = setTempAnimationStatement(
-            webgalFrames,
-            visualTarget(command.fields),
-            command.fields,
-          );
+          output = setTempAnimationStatement(webgalFrames, visualTarget(command.fields), command.fields);
           fidelity = "approximate";
         } else if (frames.length) {
           output = setTempAnimationStatement(frames, visualTarget(command.fields), command.fields);
@@ -2929,6 +2762,25 @@ export const serializeWebGal = (project: StoryProject, options: SerializeWebGalO
           output = `; Unsupported Haneoka command ${command.command} (${command.id}): timeline data is not a WebGAL animation frame array`;
           fidelity = "unsupported";
         }
+        break;
+      }
+      case VEGA_SYSTEM_OPCODE.SetDialogueVisibility:
+        output = `setTextbox:${command.fields.enabled === false ? "hide" : "show"};`;
+        fidelity = "exact";
+        break;
+      case WEBGAL_COMMAND_TYPES.setTransform:
+      case WEBGAL_COMMAND_TYPES.setTempAnimation: {
+        const isTransform = command.command === WEBGAL_COMMAND_TYPES.setTransform;
+        const content = isTransform ? (command.fields.transform ?? {}) : (command.fields.frames ?? []);
+        output = `${isTransform ? "setTransform" : "setTempAnimation"}:${escapeContent(JSON.stringify(content))} -target=${escapeContent(fieldText(command.fields, "targetName") || "0")}`;
+        if (isTransform) {
+          output += ` -duration=${finiteNumber(command.fields.durationMs, 500)}`;
+          if (fieldText(command.fields, "ease")) output += ` -ease=${escapeContent(fieldText(command.fields, "ease"))}`;
+        }
+        for (const flag of ["writeDefault", "ignoreDefault", "parallel", "keep"])
+          if (command.fields[flag] === true) output += ` -${flag}`;
+        output += `${noWait};`;
+        fidelity = "exact";
         break;
       }
       case ADV_COMMAND.Effect: {
@@ -2971,7 +2823,7 @@ export const serializeWebGal = (project: StoryProject, options: SerializeWebGalO
     const ids = scene.commands.slice(sourceIndex, index + 1).map((item) => item.id);
     if (losslessScope) lines.push(commandMetadataLine(ids));
     lines.push(emitted);
-    if (losslessScope) losslessBlocks.push({ ids, projection: emitted });
+    if (captureLossless) losslessBlocks.push({ ids, projection: emitted });
     diagnostics.push(
       storyDiagnostic(
         fidelity === "unsupported" ? "warning" : "info",
@@ -2987,21 +2839,30 @@ export const serializeWebGal = (project: StoryProject, options: SerializeWebGalO
     );
   }
   emitCommentsBefore(Number.POSITIVE_INFINITY);
-  if (losslessScope) {
+  let losslessEnvelope: WebGalLosslessEnvelope | undefined;
+  if (captureLossless) {
     const envelope: WebGalLosslessEnvelope = {
       version: 1,
-      scope: losslessScope,
+      scope: losslessScope || "scene",
       sceneId,
       localeIndex,
       ...(losslessScope === "project" ? { project: cloneStoryValue(project) } : { scene: cloneStoryValue(scene) }),
       blocks: losslessBlocks,
     };
-    lines.unshift(...metadataLines(envelope));
+    losslessEnvelope = envelope;
+    if (losslessScope) lines.unshift(...metadataLines(envelope));
   }
   return {
     text: lines.join(options.lineEnding ?? "\n") + (lines.length ? (options.lineEnding ?? "\n") : ""),
     diagnostics,
+    ...(losslessEnvelope ? { losslessEnvelope } : {}),
   };
+};
+
+/** Export what WebGAL can carry and emit explicit comments for everything else. */
+export const serializeWebGal = (project: StoryProject, options: SerializeWebGalOptions = {}): SerializeWebGalResult => {
+  const { text, diagnostics } = serializeWebGalInternal(project, options);
+  return { text, diagnostics };
 };
 
 export const serializeWebGalText = (project: StoryProject, options: SerializeWebGalOptions = {}): string =>
@@ -3186,20 +3047,21 @@ export const createWebGalSceneDraft = (
   options: Omit<SerializeWebGalOptions, "losslessMetadata"> = {},
 ): WebGalSceneDraft => {
   const sceneId = options.sceneId ?? project.entrySceneId;
-  const serialized = serializeWebGal(project, { ...options, sceneId, losslessMetadata: "scene" });
-  const parsed = parseLosslessInput(serialized.text);
-  if (parsed.invalidLosslessMetadata || !parsed.envelope?.scene) {
+  const serialized = serializeWebGalInternal(project, { ...options, sceneId }, true);
+  const envelope = serialized.losslessEnvelope;
+  if (!envelope?.scene) {
     throw new Error("Could not create the WebGAL edit baseline");
   }
+  const text = normalizedWebGalText(serialized.text);
   return {
-    text: parsed.cleanText,
+    text,
     context: {
       version: 1,
       sceneId,
-      baselineText: parsed.cleanText,
+      baselineText: text,
       localeIndex: options.localeIndex ?? 0,
-      scene: cloneStoryValue(parsed.envelope.scene),
-      blocks: cloneStoryValue(parsed.envelope.blocks),
+      scene: envelope.scene,
+      blocks: envelope.blocks,
     },
   };
 };
@@ -3257,8 +3119,7 @@ const withLocalizedSlot = (
 
 const talkDisplayNameKeys = ["targetTextNames", "targetTextNamesLocalized"] as const;
 type TalkDisplayNameKey = (typeof talkDisplayNameKeys)[number];
-const hasOwnField = (fields: JsonObject, key: string): boolean =>
-  Object.prototype.hasOwnProperty.call(fields, key);
+const hasOwnField = (fields: JsonObject, key: string): boolean => Object.prototype.hasOwnProperty.call(fields, key);
 const talkDisplayNameSource = (
   fields: JsonObject,
   localeIndex: number,
@@ -3297,7 +3158,7 @@ const withDisplayNameLocaleSlot = (
 
 /** Apply only projection baseline -> edited deltas onto the current visual command. */
 const mergeRepresentableFields = (
-  command: number | null,
+  command: number | string | null,
   baselineOriginal: JsonObject,
   current: JsonObject,
   baselineProjection: JsonObject,
@@ -3313,11 +3174,7 @@ const mergeRepresentableFields = (
     const projectionBefore = baselineProjection[key];
     const projectionAfter = edited[key];
     if (sameJson(projectionBefore, projectionAfter)) continue;
-    if (
-      command === ADV_COMMAND.Talk &&
-      key === "targetName" &&
-      typeof projectionAfter === "string"
-    ) {
+    if (command === ADV_COMMAND.Talk && key === "targetName" && typeof projectionAfter === "string") {
       const baselineSource = talkDisplayNameSource(baselineOriginal, localeIndex);
       const currentSource = talkDisplayNameSource(current, localeIndex);
       const displaySource = baselineSource ?? currentSource;
@@ -3332,9 +3189,7 @@ const mergeRepresentableFields = (
         const baselineSlot = baselinePresent
           ? displayNameLocaleSlot(baselineValue, displayIndex, localeIndex)
           : projectionBefore;
-        const currentSlot = currentPresent
-          ? displayNameLocaleSlot(currentValue, displayIndex, localeIndex)
-          : undefined;
+        const currentSlot = currentPresent ? displayNameLocaleSlot(currentValue, displayIndex, localeIndex) : undefined;
         const desired = withDisplayNameLocaleSlot(
           currentValue ?? baselineValue,
           displayIndex,
@@ -3532,7 +3387,8 @@ const archiveFieldConflict = (extensions: JsonObject, conflict: WebGalFieldConfl
 
 const blockKey = (ids: readonly string[]): string => JSON.stringify(ids);
 
-const projectionFieldsForCommand = (_command: number | null, fields: JsonObject): JsonObject => cloneStoryValue(fields);
+const projectionFieldsForCommand = (_command: number | string | null, fields: JsonObject): JsonObject =>
+  cloneStoryValue(fields);
 
 const canonicalProjectionForCommands = (
   baseline: readonly StoryProjectCommand[],
@@ -3565,8 +3421,11 @@ const canonicalProjectionForCommands = (
   return serializeWebGal(project, { localeIndex, preserveUnchangedSource: false }).text;
 };
 
-const consumedArgumentsForCommand = (command: number | null): ReadonlySet<string> => {
+const consumedArgumentsForCommand = (command: number | string | null): ReadonlySet<string> => {
   switch (command) {
+    case WEBGAL_COMMAND_TYPES.setTransform:
+    case WEBGAL_COMMAND_TYPES.setTempAnimation:
+      return new Set(["target", "duration", "ease", "writedefault", "ignoredefault", "parallel", "keep", "next"]);
     case ADV_COMMAND.Talk:
       return new Set(["speaker", "next"]);
     case ADV_COMMAND.ChatTalk:
@@ -3622,28 +3481,134 @@ interface LineMatch {
   edited: number;
 }
 
-const longestCommonLineMatches = (baseline: readonly string[], edited: readonly string[]): LineMatch[] => {
-  const rows = Array.from({ length: baseline.length + 1 }, () => new Uint16Array(edited.length + 1));
-  for (let left = baseline.length - 1; left >= 0; left -= 1) {
-    for (let right = edited.length - 1; right >= 0; right -= 1) {
-      rows[left]![right] =
-        baseline[left] === edited[right]
-          ? rows[left + 1]![right + 1]! + 1
-          : Math.max(rows[left + 1]![right]!, rows[left]![right + 1]!);
+interface LineMatchResult {
+  matches: LineMatch[];
+  exact: boolean;
+}
+
+const MAX_MYERS_EDIT_DISTANCE = 1_024;
+
+/**
+ * Myers handles the common case (a small edit in a large source) in near
+ * linear time. Its trace is explicitly bounded; callers archive heavily
+ * rewritten regions instead of guessing an identity alignment or allocating
+ * an unbounded N×M matrix.
+ */
+const myersLineMatches = (
+  baseline: readonly string[],
+  edited: readonly string[],
+  baselineStart: number,
+  baselineEnd: number,
+  editedStart: number,
+  editedEnd: number,
+): LineMatchResult => {
+  const baselineLength = baselineEnd - baselineStart;
+  const editedLength = editedEnd - editedStart;
+  const maximum = baselineLength + editedLength;
+  const distanceLimit = Math.min(maximum, MAX_MYERS_EDIT_DISTANCE);
+  const offset = distanceLimit + 1;
+  const size = distanceLimit * 2 + 3;
+  let frontier = new Int32Array(size);
+  frontier.fill(-1);
+  frontier[offset + 1] = 0;
+  const trace: Int32Array[] = [];
+
+  for (let distance = 0; distance <= distanceLimit; distance += 1) {
+    trace.push(frontier.slice());
+    const next = new Int32Array(size);
+    next.fill(-1);
+    for (let diagonal = -distance; diagonal <= distance; diagonal += 2) {
+      const index = offset + diagonal;
+      let x: number;
+      if (diagonal === -distance || (diagonal !== distance && frontier[index - 1]! < frontier[index + 1]!)) {
+        x = frontier[index + 1]!;
+      } else {
+        x = frontier[index - 1]! + 1;
+      }
+      if (x < 0) continue;
+      let y = x - diagonal;
+      while (x < baselineLength && y < editedLength && baseline[baselineStart + x] === edited[editedStart + y]) {
+        x += 1;
+        y += 1;
+      }
+      next[index] = x;
+      if (x < baselineLength || y < editedLength) continue;
+
+      const matches: LineMatch[] = [];
+      let cursorX = baselineLength;
+      let cursorY = editedLength;
+      for (let depth = distance; depth > 0; depth -= 1) {
+        const previous = trace[depth]!;
+        const currentDiagonal = cursorX - cursorY;
+        const previousDiagonal =
+          currentDiagonal === -depth ||
+          (currentDiagonal !== depth &&
+            previous[offset + currentDiagonal - 1]! < previous[offset + currentDiagonal + 1]!)
+            ? currentDiagonal + 1
+            : currentDiagonal - 1;
+        const previousX = previous[offset + previousDiagonal]!;
+        const previousY = previousX - previousDiagonal;
+        while (cursorX > previousX && cursorY > previousY) {
+          cursorX -= 1;
+          cursorY -= 1;
+          matches.push({
+            baseline: baselineStart + cursorX,
+            edited: editedStart + cursorY,
+          });
+        }
+        cursorX = previousX;
+        cursorY = previousY;
+      }
+      while (cursorX > 0 && cursorY > 0) {
+        cursorX -= 1;
+        cursorY -= 1;
+        matches.push({
+          baseline: baselineStart + cursorX,
+          edited: editedStart + cursorY,
+        });
+      }
+      return { matches: matches.reverse(), exact: true };
     }
+    frontier = next;
   }
+
+  return {
+    matches: [],
+    exact: false,
+  };
+};
+
+const longestCommonLineMatches = (baseline: readonly string[], edited: readonly string[]): LineMatchResult => {
   const matches: LineMatch[] = [];
-  let left = 0;
-  let right = 0;
-  while (left < baseline.length && right < edited.length) {
-    if (baseline[left] === edited[right]) {
-      matches.push({ baseline: left, edited: right });
-      left += 1;
-      right += 1;
-    } else if (rows[left + 1]![right]! >= rows[left]![right + 1]!) left += 1;
-    else right += 1;
+  let baselineStart = 0;
+  let editedStart = 0;
+  let baselineEnd = baseline.length;
+  let editedEnd = edited.length;
+  while (baselineStart < baselineEnd && editedStart < editedEnd && baseline[baselineStart] === edited[editedStart]) {
+    matches.push({ baseline: baselineStart, edited: editedStart });
+    baselineStart += 1;
+    editedStart += 1;
   }
-  return matches;
+  let suffixLength = 0;
+  while (
+    baselineStart < baselineEnd &&
+    editedStart < editedEnd &&
+    baseline[baselineEnd - 1] === edited[editedEnd - 1]
+  ) {
+    baselineEnd -= 1;
+    editedEnd -= 1;
+    suffixLength += 1;
+  }
+  let exact = true;
+  if (baselineStart < baselineEnd && editedStart < editedEnd) {
+    const middle = myersLineMatches(baseline, edited, baselineStart, baselineEnd, editedStart, editedEnd);
+    matches.push(...middle.matches);
+    exact = middle.exact;
+  }
+  for (let index = 0; index < suffixLength; index += 1) {
+    matches.push({ baseline: baselineEnd + index, edited: editedEnd + index });
+  }
+  return { matches, exact };
 };
 
 interface RangedLosslessBlock extends WebGalLosslessBlock {
@@ -3686,13 +3651,34 @@ const exactPlainStructuralPlan = (
 ): ExactStructuralPlan | undefined => {
   const projections = blocks.map((block) => normalizedProjection(block.projection));
   if (new Set(projections).size !== projections.length) return undefined;
+  const editedLinePositions = new Map<string, number[]>();
+  for (const [index, line] of editedLines.entries()) {
+    const positions = editedLinePositions.get(line);
+    if (positions) positions.push(index);
+    else editedLinePositions.set(line, [index]);
+  }
   const exactMatches: ExactStructuralItem[] = [];
   const matchedBlockKeys = new Set<string>();
   for (const block of blocks) {
     const projectionLines = webGalLines(block.projection);
     const starts: number[] = [];
-    for (let start = 0; start + projectionLines.length <= editedLines.length; start += 1) {
-      if (projectionLines.every((line, offset) => editedLines[start + offset] === line)) starts.push(start);
+    if (!projectionLines.length) continue;
+    let anchorOffset = 0;
+    let anchorPositions = editedLinePositions.get(projectionLines[0]!) || [];
+    for (let offset = 1; offset < projectionLines.length; offset += 1) {
+      const positions = editedLinePositions.get(projectionLines[offset]!) || [];
+      if (positions.length < anchorPositions.length) {
+        anchorOffset = offset;
+        anchorPositions = positions;
+      }
+    }
+    for (const anchorPosition of anchorPositions) {
+      const start = anchorPosition - anchorOffset;
+      if (start < 0 || start + projectionLines.length > editedLines.length) continue;
+      if (projectionLines.every((line, offset) => editedLines[start + offset] === line)) {
+        starts.push(start);
+        if (starts.length > 1) break;
+      }
     }
     if (starts.length > 1) {
       throw new Error("Ambiguous WebGAL structural edit: one projection occurs more than once in the edited scene");
@@ -3710,7 +3696,8 @@ const exactPlainStructuralPlan = (
 
   const matches = exactMatches;
   const blockByKey = new Map(blocks.map((block) => [blockKey(block.ids), block]));
-  const baselineIndexes = matches.map((match) => blocks.indexOf(blockByKey.get(blockKey(match.ids))!));
+  const blockIndexByKey = new Map(blocks.map((block, index) => [blockKey(block.ids), index]));
+  const baselineIndexes = matches.map((match) => blockIndexByKey.get(blockKey(match.ids))!);
   const structuralEvidence =
     matches.some((match) => match.start !== blockByKey.get(blockKey(match.ids))?.start) ||
     baselineIndexes.some((index, position) => position > 0 && index < baselineIndexes[position - 1]!);
@@ -3807,6 +3794,11 @@ interface WebGalEditHunk {
   moveIds?: string[];
 }
 
+interface WebGalEditPlan {
+  hunks: WebGalEditHunk[];
+  exact: boolean;
+}
+
 const normalizedProjection = (value: string): string => normalizedWebGalText(value).trim();
 
 const recognizeMoveHunks = (
@@ -3861,8 +3853,10 @@ const editHunks = (
   baselineLines: readonly string[],
   editedLines: readonly string[],
   blocks: readonly RangedLosslessBlock[],
-): WebGalEditHunk[] => {
-  const matches = longestCommonLineMatches(baselineLines, editedLines);
+): WebGalEditPlan => {
+  const alignment = longestCommonLineMatches(baselineLines, editedLines);
+  const { matches } = alignment;
+  if (!alignment.exact) return { hunks: [], exact: false };
   const raw: WebGalEditHunk[] = [];
   let previousBaseline = -1;
   let previousEdited = -1;
@@ -3910,7 +3904,7 @@ const editHunks = (
       previous.ids = [...new Set([...previous.ids, ...hunk.ids])];
     } else merged.push({ ...hunk, ids: [...new Set(hunk.ids)] });
   }
-  return merged;
+  return { hunks: merged, exact: alignment.exact };
 };
 
 const insertionIndexForBaselinePosition = (
@@ -3946,9 +3940,17 @@ const mergeLosslessScene = (
   if (parsed.invalidLosslessMetadata) {
     throw new Error("Invalid or duplicated Haneoka lossless WebGAL metadata");
   }
-  const project = cloneStoryValue(baseProject);
-  const scene = project.scenes.find((item) => item.id === options.sceneId);
-  if (!scene) throw new RangeError(`Story scene '${options.sceneId}' does not exist`);
+  const sceneIndex = baseProject.scenes.findIndex((item) => item.id === options.sceneId);
+  if (sceneIndex < 0) throw new RangeError(`Story scene '${options.sceneId}' does not exist`);
+  const sourceScene = baseProject.scenes[sceneIndex]!;
+  const scene = {
+    ...sourceScene,
+    extensions: cloneStoryValue(sourceScene.extensions),
+  };
+  const project: StoryProject = {
+    ...baseProject,
+    scenes: baseProject.scenes.map((item, index) => (index === sceneIndex ? scene : item)),
+  };
   if (options.baselineContext && options.baselineContext.sceneId !== scene.id) {
     throw new Error("WebGAL edit context belongs to another scene");
   }
@@ -3961,23 +3963,28 @@ const mergeLosslessScene = (
     throw new Error("WebGAL edit locale does not match its lossless baseline");
   }
   const localeIndex = storedLocaleIndex ?? options.localeIndex ?? 0;
-  const baselineScene = cloneStoryValue(options.baselineContext?.scene || parsed.envelope?.scene || scene);
+  const baselineScene = options.baselineContext?.scene || parsed.envelope?.scene || scene;
   const baselineCommandIds = baselineScene.commands.map((command) => command.id);
-  const baselineProject = cloneStoryValue(project);
-  baselineProject.scenes = baselineProject.scenes.map((item) => (item.id === scene.id ? baselineScene : item));
-  const generatedBaseline = serializeWebGal(baselineProject, {
-    sceneId: scene.id,
-    localeIndex,
-    losslessMetadata: options.baselineContext ? false : "scene",
-  });
-  const generatedParsed = options.baselineContext ? undefined : parseLosslessInput(generatedBaseline.text);
-  const baseline = options.baselineContext?.baselineText || generatedParsed?.cleanText || generatedBaseline.text;
+  const baselineProject: StoryProject = {
+    ...project,
+    scenes: project.scenes.map((item, index) => (index === sceneIndex ? baselineScene : item)),
+  };
+  const generatedBaseline = options.baselineContext
+    ? undefined
+    : serializeWebGal(baselineProject, {
+        sceneId: scene.id,
+        localeIndex,
+        losslessMetadata: "scene",
+      });
+  const generatedParsed = generatedBaseline ? parseLosslessInput(generatedBaseline.text) : undefined;
+  const baseline = options.baselineContext?.baselineText || generatedParsed?.cleanText || generatedBaseline?.text || "";
   const losslessBlocks =
     options.baselineContext?.blocks || parsed.envelope?.blocks || generatedParsed?.envelope?.blocks || [];
   const blockCommandIds = losslessBlocks.flatMap((block) => block.ids);
+  const blockCommandIdSet = new Set(blockCommandIds);
   if (
     baselineCommandIds.length !== blockCommandIds.length ||
-    baselineCommandIds.some((id) => !blockCommandIds.includes(id))
+    baselineCommandIds.some((id) => !blockCommandIdSet.has(id))
   ) {
     throw new Error("WebGAL edit context command blocks do not match its scene snapshot");
   }
@@ -3986,21 +3993,21 @@ const mergeLosslessScene = (
     sceneId: scene.id,
     sceneName: scene.name,
   });
-  const hasEditedAuthorComments = parseWebGalScene(parsed.cleanText).statements.some(
-    (statement) => statement.kind === "comment" && !isGeneratedHaneokaProjectionComment(statement.raw),
-  );
+  const importedScene = imported.project.scenes[0];
+  const importedWebgal = objectValue(importedScene?.extensions.webgal);
+  const hasEditedAuthorComments = Array.isArray(importedWebgal.comments) && importedWebgal.comments.length > 0;
   const diagnostics = [...parsed.diagnostics, ...imported.diagnostics];
   if (normalizedWebGalText(parsed.cleanText) === normalizedWebGalText(baseline)) {
     diagnostics.push(
       storyDiagnostic(
         "info",
         "webgal.lossless.unchanged",
-        `$.scenes[${project.scenes.indexOf(scene)}]`,
+        `$.scenes[${sceneIndex}]`,
         "Unchanged WebGAL projection restored the original Haneoka scene exactly",
         "exact",
       ),
     );
-    return { format: "webgal", project, diagnostics };
+    return { format: "webgal", project: cloneStoryValue(project), diagnostics };
   }
 
   const baselineLines = webGalLines(baseline);
@@ -4009,6 +4016,37 @@ const mergeLosslessScene = (
   const exactStructuralPlan = parsed.hasCommandMetadata
     ? undefined
     : exactPlainStructuralPlan(editedLines, rangedBlocks);
+  const lineDiff =
+    !exactStructuralPlan && !parsed.hasCommandMetadata
+      ? editHunks(baselineLines, editedLines, rangedBlocks)
+      : undefined;
+  if (lineDiff && !lineDiff.exact) {
+    const lossless = objectValue(scene.extensions.webgalLossless);
+    const conflicts = Array.isArray(lossless.structuralConflicts) ? cloneStoryValue(lossless.structuralConflicts) : [];
+    const conflict: JsonObject = {
+      kind: "diff-limit",
+      editedText: parsed.cleanText,
+    };
+    const signature = stringifyStoryJson(conflict, false);
+    if (!conflicts.some((item) => stringifyStoryJson(item, false) === signature)) {
+      conflicts.push(conflict);
+    }
+    scene.extensions.webgalLossless = {
+      ...lossless,
+      structuralConflicts: conflicts,
+    };
+    diagnostics.push(
+      storyDiagnostic(
+        "warning",
+        "webgal.lossless.diffLimit",
+        `$.scenes[${sceneIndex}].extensions.webgalLossless.structuralConflicts`,
+        "The edit exceeded the bounded diff limit and was archived without reassigning command identities",
+        "unsupported",
+      ),
+    );
+    assertValidStoryProject(project);
+    return { format: "webgal", project: cloneStoryValue(project), diagnostics };
+  }
   const rawHunks: WebGalEditHunk[] = exactStructuralPlan
     ? exactStructuralPlan.items.flatMap((item) => {
         if (item.kind !== "block" || item.text === undefined) return [];
@@ -4067,12 +4105,12 @@ const mergeLosslessScene = (
             },
           ];
         })
-      : editHunks(baselineLines, editedLines, rangedBlocks);
+      : lineDiff!.hunks;
   const hunks = parsed.hasCommandMetadata
     ? rawHunks
     : recognizeMoveHunks(rawHunks, baselineLines, editedLines, rangedBlocks);
   const baselineById = new Map(baselineScene.commands.map((command) => [command.id, command]));
-  let nextCommands = cloneStoryValue(scene.commands);
+  let nextCommands = [...scene.commands];
   const rewritten: StoryProjectCommand[] = [];
   const deleted: StoryProjectCommand[] = [];
   const fieldConflicts: WebGalFieldConflict[] = [];
@@ -4110,7 +4148,8 @@ const mergeLosslessScene = (
   }
   if (exactStructuralPlan) {
     const plannedBaselineOrder = exactStructuralPlan.items.flatMap((item) => (item.kind === "block" ? item.ids : []));
-    const survivingBaselineOrder = baselineOrder.filter((id) => plannedBaselineOrder.includes(id));
+    const plannedBaselineIdSet = new Set(plannedBaselineOrder);
+    const survivingBaselineOrder = baselineOrder.filter((id) => plannedBaselineIdSet.has(id));
     const hasDraftAdditions = exactStructuralPlan.items.some((item) => item.kind === "addition");
     const structuralChange =
       hasDraftAdditions ||
@@ -4364,9 +4403,7 @@ const mergeLosslessScene = (
     });
     nextCommands.splice(Math.min(insertionIndex, nextCommands.length), 0, ...replacements);
   }
-  const importedScene = imported.project.scenes[0];
   const originalWebgal = objectValue(scene.extensions.webgal);
-  const importedWebgal = objectValue(importedScene?.extensions.webgal);
   scene.commands = nextCommands;
   scene.extensions = {
     ...scene.extensions,
@@ -4387,7 +4424,7 @@ const mergeLosslessScene = (
       storyDiagnostic(
         "info",
         "webgal.lossless.fieldsMerged",
-        `$.scenes[${project.scenes.indexOf(scene)}].commands`,
+        `$.scenes[${sceneIndex}].commands`,
         `${mergedCommandCount} command(s) received only the fields changed in the WebGAL draft`,
         "exact",
       ),
@@ -4398,7 +4435,7 @@ const mergeLosslessScene = (
       storyDiagnostic(
         "info",
         "webgal.lossless.commandsMoved",
-        `$.scenes[${project.scenes.indexOf(scene)}].commands`,
+        `$.scenes[${sceneIndex}].commands`,
         `${movedCommandCount} command(s) were moved without replacing their IDs or opaque fields`,
         "exact",
       ),
@@ -4409,7 +4446,7 @@ const mergeLosslessScene = (
       storyDiagnostic(
         "warning",
         "webgal.lossless.fieldConflicts",
-        `$.scenes[${project.scenes.indexOf(scene)}].extensions.webgalLossless.conflicts`,
+        `$.scenes[${sceneIndex}].extensions.webgalLossless.conflicts`,
         `${fieldConflicts.length} concurrent field edit(s) kept the current visual value and archived the WebGAL edit`,
         "unsupported",
       ),
@@ -4420,7 +4457,7 @@ const mergeLosslessScene = (
       storyDiagnostic(
         "warning",
         "webgal.lossless.structuralConflicts",
-        `$.scenes[${project.scenes.indexOf(scene)}].extensions.webgalLossless.structuralConflicts`,
+        `$.scenes[${sceneIndex}].extensions.webgalLossless.structuralConflicts`,
         `${structuralConflicts.length} stale structural edit(s) were archived because their visual command was already deleted`,
         "unsupported",
       ),
@@ -4458,7 +4495,7 @@ const mergeLosslessScene = (
       storyDiagnostic(
         "warning",
         "webgal.lossless.commandsRewritten",
-        `$.scenes[${project.scenes.indexOf(scene)}].extensions.webgalLossless.archivedCommands`,
+        `$.scenes[${sceneIndex}].extensions.webgalLossless.archivedCommands`,
         `${rewritten.length} command snapshot(s) were archived because the WebGAL rewrite could not be merged safely`,
         "unsupported",
       ),
@@ -4469,14 +4506,14 @@ const mergeLosslessScene = (
       storyDiagnostic(
         "warning",
         "webgal.lossless.commandsDeleted",
-        `$.scenes[${project.scenes.indexOf(scene)}].extensions.webgalLossless.archivedCommands`,
+        `$.scenes[${sceneIndex}].extensions.webgalLossless.archivedCommands`,
         `${deleted.length} deleted command snapshot(s) were archived instead of being discarded`,
         "unsupported",
       ),
     );
   }
   assertValidStoryProject(project);
-  return { format: "webgal", project, diagnostics };
+  return { format: "webgal", project: cloneStoryValue(project), diagnostics };
 };
 
 export interface MergeWebGalSceneOptions extends ImportWebGalOptions {
@@ -4533,3 +4570,64 @@ export const importWebGal = (input: string | Uint8Array, options: ImportWebGalOp
   const sceneId = envelope.sceneId;
   return mergeLosslessScene(base, parsed, { ...options, sceneId });
 };
+
+export interface WebGalStatementEdit {
+  readonly content?: string;
+  readonly speaker?: string;
+  readonly arguments?: Readonly<Record<string, string | boolean | number | null | undefined>>;
+}
+export function editWebGalStatement(source: string, statement: WebGalStatement, edit: WebGalStatementEdit): string {
+  const logical = webGalLogicalLines(source).find((line) => line.line === statement.line);
+  if (!logical || logical.raw !== statement.raw) throw new Error("The statement changed before this edit was applied");
+  const trimmed = logical.body.trim(),
+    terminator = findUnescaped(trimmed, ";");
+  const rawBody = (terminator >= 0 ? trimmed.slice(0, terminator) : trimmed).trim();
+  const [oldBody, oldArguments] = splitBodyAndArguments(rawBody);
+  const colon = findUnescaped(oldBody, ":");
+  const prefix = edit.speaker === undefined ? (colon < 0 ? "" : oldBody.slice(0, colon)) : escapeContent(edit.speaker);
+  const content =
+    edit.content === undefined ? (colon < 0 ? oldBody : oldBody.slice(colon + 1)) : escapeContent(edit.content);
+  const body =
+    statement.kind === "dialogue"
+      ? prefix
+        ? prefix + ":" + content
+        : content
+      : `${colon < 0 ? oldBody : prefix}:${edit.content === undefined ? statement.escapedContent : content}`;
+  const changes = new Map(
+    Object.entries(edit.arguments ?? {}).map(([key, value]) => [key.toLowerCase(), { key, value }]),
+  );
+  const tokens: string[] = [];
+  const emit = (key: string, value: string | boolean | number | null | undefined) => {
+    if (value === undefined || value === null) return;
+    tokens.push(
+      value === true ? `-${key}` : `-${key}=${typeof value === "string" ? escapeContent(value) : String(value)}`,
+    );
+  };
+  for (const token of argumentTokens(oldArguments)) {
+    const parsed = parseArguments(token)[0];
+    if (!parsed) {
+      tokens.push(token);
+      continue;
+    }
+    const key = parsed.name.toLowerCase(),
+      change = changes.get(key);
+    if (!change) {
+      tokens.push(token);
+      continue;
+    }
+    emit(change.key, change.value);
+    changes.set(key, { key: change.key, value: undefined });
+  }
+  for (const change of changes.values()) emit(change.key, change.value);
+  const indent = /^[ \t]*/u.exec(statement.raw)?.[0] ?? "";
+  const trailing = terminator >= 0 ? trimmed.slice(terminator + 1) : "";
+  const updated =
+    statement.kind === "comment"
+      ? `${indent}; ${edit.content ?? statement.content}`
+      : `${indent}${body}${tokens.length ? " " + tokens.join(" ") : ""};${trailing}`;
+  const pieces = source.split(/(\r\n|\r|\n)/u);
+  let start = 0;
+  for (let i = 0; i < (statement.line - 1) * 2; i++) start += (pieces[i] ?? "").length;
+  const bom = statement.line === 1 && statement.raw.startsWith("\uFEFF") ? "\uFEFF" : "";
+  return source.slice(0, start) + bom + updated + source.slice(start + statement.raw.length);
+}

@@ -9,14 +9,7 @@ import type {
 import { normalizeWebGalWorkspacePath } from "./workspace.js";
 
 export type WebGalWorkspaceResourceKind =
-  | "scene"
-  | "background"
-  | "figure"
-  | "image"
-  | "audio"
-  | "video"
-  | "data"
-  | "other";
+  "scene" | "background" | "figure" | "image" | "audio" | "video" | "data" | "other";
 
 export type WebGalWorkspaceAudioUsage = "bgm" | "se" | "voice";
 
@@ -53,55 +46,20 @@ export type WebGalWorkspaceResourceInsert =
     };
 
 export interface WebGalFormatOperations {
-  importFormat(
-    request: AltairFormatRequest,
-    formatId?: string,
-  ): Promise<AltairFormatImportResult>;
-  exportFormat(
-    formatId: string,
-    request: AltairFormatExportRequest,
-  ): Promise<AltairFormatExportResult>;
+  importFormat(request: AltairFormatRequest, formatId?: string): Promise<AltairFormatImportResult>;
+  exportFormat(formatId: string, request: AltairFormatExportRequest): Promise<AltairFormatExportResult>;
 }
 
-const IMAGE_EXTENSIONS = new Set([
-  "avif",
-  "bmp",
-  "gif",
-  "jpeg",
-  "jpg",
-  "png",
-  "svg",
-  "webp",
-]);
-const AUDIO_EXTENSIONS = new Set([
-  "aac",
-  "flac",
-  "m4a",
-  "mp3",
-  "ogg",
-  "opus",
-  "wav",
-  "weba",
-]);
+const IMAGE_EXTENSIONS = new Set(["avif", "bmp", "gif", "jpeg", "jpg", "png", "svg", "webp"]);
+const AUDIO_EXTENSIONS = new Set(["aac", "flac", "m4a", "mp3", "ogg", "opus", "wav", "weba"]);
 const VIDEO_EXTENSIONS = new Set(["m4v", "mov", "mp4", "ogv", "webm"]);
-const DATA_EXTENSIONS = new Set([
-  "css",
-  "json",
-  "txt",
-  "webgal",
-  "wg",
-  "yaml",
-  "yml",
-]);
+const DATA_EXTENSIONS = new Set(["css", "json", "txt", "webgal", "wg", "yaml", "yml"]);
 
-const pathExtension = (path: string): string =>
-  path.match(/\.([a-z0-9]+)$/iu)?.[1]?.toLocaleLowerCase("en-US") ?? "";
+const pathExtension = (path: string): string => path.match(/\.([a-z0-9]+)$/iu)?.[1]?.toLocaleLowerCase("en-US") ?? "";
 
 const workspaceContentPath = (path: string): readonly string[] => {
   const segments = path.split("/");
-  const gameIndex = segments.findIndex(
-    (segment) => segment.toLocaleLowerCase("en-US") === "game",
-  );
+  const gameIndex = segments.findIndex((segment) => segment.toLocaleLowerCase("en-US") === "game");
   return gameIndex >= 0 ? segments.slice(gameIndex + 1) : segments;
 };
 
@@ -110,9 +68,7 @@ const workspaceContentPath = (path: string): readonly string[] => {
  * fallbacks are intentionally last so a host can display extra project files
  * without pretending they belong to a WebGAL resource category.
  */
-export const classifyWebGalWorkspacePath = (
-  sourcePath: string,
-): WebGalWorkspaceResourceClassification => {
+export const classifyWebGalWorkspacePath = (sourcePath: string): WebGalWorkspaceResourceClassification => {
   const path = normalizeWebGalWorkspacePath(sourcePath);
   const content = workspaceContentPath(path);
   const root = content[0]?.toLocaleLowerCase("en-US") ?? "";
@@ -123,25 +79,16 @@ export const classifyWebGalWorkspacePath = (
   if (root === "scene" && ["txt", "webgal", "wg"].includes(extension)) {
     return { kind: "scene", logicalPath, resourceKey };
   }
-  if (
-    root === "background" &&
-    (IMAGE_EXTENSIONS.has(extension) || VIDEO_EXTENSIONS.has(extension))
-  ) {
+  if (root === "background" && (IMAGE_EXTENSIONS.has(extension) || VIDEO_EXTENSIONS.has(extension))) {
     return { kind: "background", logicalPath, resourceKey };
   }
-  if (
-    root === "figure" &&
-    (IMAGE_EXTENSIONS.has(extension) || extension === "json")
-  ) {
+  if (root === "figure" && (IMAGE_EXTENSIONS.has(extension) || extension === "json")) {
     return { kind: "figure", logicalPath, resourceKey };
   }
   if (root === "bgm" && AUDIO_EXTENSIONS.has(extension)) {
     return { kind: "audio", usage: "bgm", logicalPath, resourceKey };
   }
-  if (
-    (root === "vocal" || root === "voice" || root === "sound") &&
-    AUDIO_EXTENSIONS.has(extension)
-  ) {
+  if ((root === "vocal" || root === "voice" || root === "sound") && AUDIO_EXTENSIONS.has(extension)) {
     return {
       kind: "audio",
       usage: root === "vocal" || root === "voice" ? "voice" : "se",
@@ -169,17 +116,11 @@ export const classifyWebGalWorkspacePath = (
 
 const throwIfAborted = (signal?: AbortSignal): void => {
   if (!signal?.aborted) return;
-  throw (
-    signal.reason ??
-    new DOMException("WebGAL workspace operation aborted", "AbortError")
-  );
+  throw signal.reason ?? new DOMException("WebGAL workspace operation aborted", "AbortError");
 };
 
 export const webGalWorkspaceSourceFiles = async (
-  files: readonly Pick<
-    WebGalBrowserWorkspaceFile,
-    "file" | "path" | "mediaType"
-  >[],
+  files: readonly Pick<WebGalBrowserWorkspaceFile, "file" | "path" | "mediaType">[],
   signal?: AbortSignal,
 ): Promise<readonly AltairSourceFile[]> => {
   const result: AltairSourceFile[] = [];
@@ -199,10 +140,7 @@ export const webGalWorkspaceSourceFiles = async (
 
 export const importWebGalBrowserWorkspace = async (
   operations: WebGalFormatOperations,
-  files: readonly Pick<
-    WebGalBrowserWorkspaceFile,
-    "file" | "path" | "mediaType"
-  >[],
+  files: readonly Pick<WebGalBrowserWorkspaceFile, "file" | "path" | "mediaType">[],
   options: {
     readonly title?: string;
     readonly releaseServer?: string;
@@ -216,9 +154,7 @@ export const importWebGalBrowserWorkspace = async (
       ...(options.entryPath ? { entryPath: options.entryPath } : {}),
       options: {
         ...(options.title ? { title: options.title } : {}),
-        ...(options.releaseServer
-          ? { releaseServer: options.releaseServer }
-          : {}),
+        ...(options.releaseServer ? { releaseServer: options.releaseServer } : {}),
       },
       ...(options.signal ? { signal: options.signal } : {}),
     },
@@ -238,18 +174,13 @@ export const exportWebGalBrowserWorkspace = (
     project,
     ...(options.entryPath ? { entryPath: options.entryPath } : {}),
     options: {
-      ...(options.localeIndex === undefined
-        ? {}
-        : { localeIndex: options.localeIndex }),
+      ...(options.localeIndex === undefined ? {} : { localeIndex: options.localeIndex }),
     },
     ...(options.signal ? { signal: options.signal } : {}),
   });
 
 const commonResource = (
-  file: Pick<
-    WebGalBrowserWorkspaceFile,
-    "resourceKey" | "logicalPath" | "path"
-  >,
+  file: Pick<WebGalBrowserWorkspaceFile, "resourceKey" | "logicalPath" | "path">,
 ): Readonly<Record<string, unknown>> => ({
   resourceRef: file.resourceKey,
   source: file.logicalPath,
@@ -259,10 +190,7 @@ const commonResource = (
 });
 
 export const webGalWorkspaceResourceInsert = (
-  file: Pick<
-    WebGalBrowserWorkspaceFile,
-    "kind" | "usage" | "resourceKey" | "logicalPath" | "path"
-  >,
+  file: Pick<WebGalBrowserWorkspaceFile, "kind" | "usage" | "resourceKey" | "logicalPath" | "path">,
   preferredVisualKind?: WebGalWorkspaceVisualInsertKind,
 ): WebGalWorkspaceResourceInsert | undefined => {
   const common = commonResource(file);
@@ -317,50 +245,88 @@ export const webGalWorkspaceResourceInsert = (
 };
 
 const normalizedUrlIndex = (
-  files: readonly Pick<
-    WebGalBrowserWorkspaceFile,
-    "path" | "logicalPath" | "resourceKey" | "url"
-  >[],
-): ReadonlyMap<string, string> => {
-  const result = new Map<string, string>();
+  files: readonly Pick<WebGalBrowserWorkspaceFile, "path" | "logicalPath" | "resourceKey" | "url">[],
+): { exact: ReadonlyMap<string, string | null>; folded: ReadonlyMap<string, string | null> } => {
+  const exact = new Map<string, string | null>();
+  const folded = new Map<string, string | null>();
+  const add = (index: Map<string, string | null>, key: string, url: string) => {
+    index.set(key, index.has(key) && index.get(key) !== url ? null : url);
+  };
   for (const file of files) {
     if (!file.url) continue;
     for (const reference of [file.path, file.logicalPath, file.resourceKey]) {
-      result.set(
-        normalizeWebGalWorkspacePath(reference).toLocaleLowerCase("en-US"),
-        file.url,
-      );
+      const path = normalizeWebGalWorkspacePath(reference);
+      add(exact, path, file.url);
+      add(folded, path.toLocaleLowerCase("en-US"), file.url);
     }
   }
-  return result;
+  return { exact, folded };
 };
 
 export const hydrateWebGalWorkspaceAssetUrls = <Value>(
   value: Value,
-  files: readonly Pick<
-    WebGalBrowserWorkspaceFile,
-    "path" | "logicalPath" | "resourceKey" | "url"
-  >[],
+  files: readonly Pick<WebGalBrowserWorkspaceFile, "path" | "logicalPath" | "resourceKey" | "url">[],
 ): Value => {
   const urls = normalizedUrlIndex(files);
-  if (!urls.size) return value;
-  const hydrate = (entry: unknown): unknown => {
+  if (!urls.exact.size) return value;
+  const resourceFields = new Set([
+    "url",
+    "src",
+    "source",
+    "playableUrl",
+    "texture",
+    "textures",
+    "imageUrl",
+    "model",
+    "modelUrl",
+    "moc",
+    "physics",
+    "pose",
+    "userData",
+    "userdata",
+    "motionSync",
+    "motionSyncUrl",
+    "atlas",
+    "skeleton",
+    "fontUrl",
+    "videoUrl",
+  ]);
+  const authoredFields = new Set([
+    "text",
+    "targetTextNames",
+    "speaker",
+    "name",
+    "title",
+    "label",
+    "description",
+    "condition",
+    "expression",
+    "script",
+    "variables",
+    "sourcePath",
+    "resourceRef",
+    "key",
+    "id",
+    "targetName",
+    "metadata",
+    "extensions",
+  ]);
+  const hydrate = (entry: unknown, field = "", root = false): unknown => {
     if (typeof entry === "string") {
+      if (!root && !resourceFields.has(field) && !/(?:Url|Urls|URI|URIs)$/u.test(field)) return entry;
       try {
-        return (
-          urls.get(
-            normalizeWebGalWorkspacePath(entry).toLocaleLowerCase("en-US"),
-          ) ?? entry
-        );
+        const path = normalizeWebGalWorkspacePath(entry);
+        const url = urls.exact.has(path) ? urls.exact.get(path) : urls.folded.get(path.toLocaleLowerCase("en-US"));
+        return url ?? entry;
       } catch {
         return entry;
       }
     }
-    if (Array.isArray(entry)) return entry.map(hydrate);
+    if (Array.isArray(entry)) return entry.map((value) => hydrate(value, field));
     if (!entry || typeof entry !== "object") return entry;
     return Object.fromEntries(
-      Object.entries(entry).map(([key, nested]) => [key, hydrate(nested)]),
+      Object.entries(entry).map(([key, nested]) => [key, authoredFields.has(key) ? nested : hydrate(nested, key)]),
     );
   };
-  return hydrate(value) as Value;
+  return hydrate(value, "", true) as Value;
 };
