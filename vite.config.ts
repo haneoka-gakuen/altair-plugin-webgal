@@ -10,6 +10,7 @@ export default defineConfig({
     lib: {
       entry: {
         authoring: resolve(root, "src/authoring.ts"),
+        "native-script": resolve(root, "src/native-script.ts"),
         craft: resolve(root, "src/craft.ts"),
         index: resolve(root, "src/index.ts"),
         resources: resolve(root, "src/resources.ts"),
@@ -25,6 +26,7 @@ export default defineConfig({
       external: (id) =>
         id === "@haneoka/altair-ui-react" ||
         id === "@haneoka/vega-plugin-webgal/commands" ||
+        id === "@haneoka/vega-plugin-webgal/animation" ||
         /^react(?:-dom)?(?:\/|$)/u.test(id) ||
         id === "@haneoka/altair/documents" ||
         id === "@haneoka/altair-plugin-adv/documents" ||

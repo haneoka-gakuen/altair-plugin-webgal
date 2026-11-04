@@ -9,7 +9,6 @@ packages:
   - ".dependencies/vega"
   - ".dependencies/vega/packages/protocol"
   - ".dependencies/vega-plugin-webgal"
-  - ".dependencies/vega-renderer-pixi"
   - ".dependencies/vega-plugin-richtext"
   - ".dependencies/vega-ui-portable"
 

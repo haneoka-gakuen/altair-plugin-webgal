@@ -1,3 +1,4 @@
+import { normalizeWebGalAnimation } from "@haneoka/vega-plugin-webgal/animation";
 import { parseWebGalCraftProject, serializeWebGalCraftProject, webGalCraftConfigExtension } from "./craft-model.js";
 import { webGalFigureProfile, webGalRuntimeLayout } from "./figure-layout.js";
 import {
@@ -574,7 +575,7 @@ export const importWebGalWorkspace = async (
   const imported: ImportedSceneSource[] = [];
   const diagnostics: StoryDiagnostic[] = [];
   const importErrors: unknown[] = [];
-  const animationPresets: Record<string, readonly JsonObject[]> = Object.assign(
+  const animationPresets: Record<string, readonly JsonObject[] | JsonObject> = Object.assign(
     Object.create(null),
     options.animationPresets,
   );
@@ -594,9 +595,8 @@ export const importWebGalWorkspace = async (
     const name = file.path.slice(animationPrefix.length, -5);
     try {
       const parsed: unknown = JSON.parse(decoder.decode(file.bytes));
-      if (!Array.isArray(parsed) || parsed.some((frame) => !objectValue(frame)))
-        throw new TypeError("Animation must contain an array of keyframes");
-      animationPresets[name] = parsed as JsonObject[];
+      normalizeWebGalAnimation(parsed);
+      animationPresets[name] = parsed as JsonObject[] | JsonObject;
     } catch (error) {
       diagnostics.push(
         storyDiagnostic(
@@ -762,7 +762,25 @@ export const importWebGalWorkspace = async (
     assets,
     runtime,
     storyFields,
-    ...(baseProject.plugins === undefined ? {} : { plugins: baseProject.plugins }),
+    plugins: [
+      ...new Map(
+        [
+          ...(baseProject.plugins ?? []),
+          ...["markdown", "html", "bbcode", "latex", "typst"]
+            .filter((format) =>
+              scenes.some((scene) => scene.commands.some((command) => command.fields.textFormat === format)),
+            )
+            .flatMap((format) => [
+              { id: "haneoka.vega-richtext", version: "0.1.0", permissions: ["ui:dom"] },
+              {
+                id: `haneoka.vega-richtext-${format}`,
+                version: "0.1.0",
+                permissions: format === "typst" ? ["ui:dom", "wasm:execute"] : ["ui:dom"],
+              },
+            ]),
+        ].map((plugin) => [plugin.id, plugin]),
+      ).values(),
+    ],
     extensions,
   };
   assertValidStoryProject(project);
