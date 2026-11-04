@@ -26,10 +26,11 @@ interface NativeScriptUnit {
 }
 export interface NativeScriptMap {
   format: "altair-native-script";
-  version: 1;
+  version: 1 | 2;
   dialect?: 2;
   scene: AltairSceneDocument;
   localeIndex: number;
+  localeTag?: string;
   context: WebGalSceneEditContext;
   units: NativeScriptUnit[];
   performances: Record<string, StoryProjectCommand>;
@@ -59,7 +60,8 @@ export function parseNativeScriptMap(value: unknown): NativeScriptMap {
   if (
     !map ||
     map.format !== "altair-native-script" ||
-    map.version !== 1 ||
+    (map.version !== 1 && map.version !== 2) ||
+    (map.version === 2 && typeof map.localeTag !== "string") ||
     !Number.isInteger(map.localeIndex) ||
     map.localeIndex < 0 ||
     map.localeIndex > 4 ||
@@ -163,10 +165,12 @@ export function resolveNativeScriptWorkspace(
   });
 }
 const locales = ["ja", "en", "zh-TW", "zh-CN", "ko"];
-const localized = (value: JsonValue | undefined, index: number): string => {
+const localized = (value: JsonValue | undefined, index: number | string): string => {
   if (typeof value === "string") return value;
   const values = Array.isArray(value) ? value : Object.values(record(value));
-  const preferred = Array.isArray(value) ? value[index] : record(value)[locales[index]!];
+  const preferred = Array.isArray(value)
+    ? value[typeof index === "number" ? index : locales.indexOf(index)]
+    : record(value)[typeof index === "number" ? locales[index]! : index];
   return typeof preferred === "string" && preferred
     ? preferred
     : String(values.find((value) => typeof value === "string" && value) ?? "");
@@ -252,6 +256,9 @@ export function createNativeScriptDraft(
   previous?: NativeScriptMap,
 ): NativeScriptDraft {
   scene = cleanNativeScriptScene(scene);
+  const localeTag =
+    previous?.localeTag ??
+    (!previous && project.meta.locale && !locales.includes(project.meta.locale) ? project.meta.locale : undefined);
   const compact = !previous || previous.dialect === 2;
   const units = unitsFor(project, scene, compact);
   const references: Record<string, string> = {},
@@ -265,7 +272,7 @@ export function createNativeScriptDraft(
     if (unit.primaryId || (compact && serializeNativeStatement(unit.command) !== undefined)) continue;
     const node = nodes.get(unit.rootId)!;
     const fields = compiled.commands.find((command) => command.id === unit.rootId)?.fields ?? {};
-    const target = localized(fields.targetTextNames, localeIndex) || String(fields.targetName ?? "");
+    const target = localized(fields.targetTextNames, localeTag ?? localeIndex) || String(fields.targetName ?? "");
     const source = String(
       fields.backgroundRef ?? fields.live2dKey ?? fields.bgmRef ?? fields.seRef ?? fields.motionName ?? "",
     );
@@ -296,6 +303,7 @@ export function createNativeScriptDraft(
   const draft = createWebGalSceneDraft(shadow(project, scene, units), {
     sceneId: scene.id,
     localeIndex,
+    ...(localeTag ? { localeTag } : {}),
     preserveUnchangedSource: false,
     performanceReferences: references,
     ...(compact ? { commandText: serializeNativeStatement } : {}),
@@ -304,10 +312,11 @@ export function createNativeScriptDraft(
     text: draft.text,
     map: {
       format: "altair-native-script",
-      version: 1,
+      version: localeTag ? 2 : 1,
       ...(compact ? { dialect: 2 as const } : {}),
       scene: cloneStoryValue(scene),
       localeIndex,
+      ...(localeTag ? { localeTag } : {}),
       context: draft.context,
       units,
       performances,
@@ -341,12 +350,14 @@ export function rebaseNativeScriptDraft(
       : {}),
     sceneId: scene.id,
     localeIndex: draft.map.localeIndex,
+    ...(draft.map.localeTag ? { localeTag: draft.map.localeTag } : {}),
     baselineContext: previous.map.context,
     nativePerformances: { ...previous.map.performances, ...draft.map.performances },
   });
   const next = createWebGalSceneDraft(merged.project, {
     sceneId: scene.id,
     localeIndex: draft.map.localeIndex,
+    ...(draft.map.localeTag ? { localeTag: draft.map.localeTag } : {}),
     performanceReferences: references,
     ...(draft.map.dialect === 2 ? { commandText: serializeNativeStatement } : {}),
   });
@@ -423,7 +434,7 @@ function rebindSpeaker(
   project: StoryProject,
   before: StoryProjectCommand,
   after: StoryProjectCommand,
-  locale: number,
+  locale: number | string,
 ): StoryProjectCommand {
   if (after.command !== ADV_COMMAND.Talk || equal(before.fields.targetTextNames, after.fields.targetTextNames))
     return after;
@@ -524,7 +535,7 @@ export function applyNativeScript(
   text: string,
   onPerformances?: (roots: string[]) => void,
 ): AltairSceneDocument {
-  if (map.format !== "altair-native-script" || map.version !== 1 || map.scene.id !== current.id)
+  if (map.format !== "altair-native-script" || (map.version !== 1 && map.version !== 2) || map.scene.id !== current.id)
     throw new Error("Script map belongs to another scene");
   if (text === map.context.baselineText) return cloneStoryValue(current);
   const units = unitsFor(project, current, map.dialect === 2);
@@ -540,6 +551,7 @@ export function applyNativeScript(
       : {}),
     sceneId: current.id,
     localeIndex: map.localeIndex,
+    ...(map.localeTag ? { localeTag: map.localeTag } : {}),
     baselineContext: map.context,
     nativePerformances: map.performances,
   });
@@ -581,7 +593,7 @@ export function applyNativeScript(
       if (command)
         changes.set(unit.primaryId, {
           before: unit.command,
-          after: rebindSpeaker(project, unit.command, command, map.localeIndex),
+          after: rebindSpeaker(project, unit.command, command, map.localeTag ?? map.localeIndex),
         });
       else removed.add(unit.primaryId);
     }

@@ -227,6 +227,7 @@ const cachedSourceImport = async (
     importOptions.sceneName ?? "",
     importOptions.releaseServer ?? "",
     importOptions.localeIndex ?? null,
+    importOptions.localeTag ?? null,
     importOptions.assetRoot ?? "",
     importOptions.additionalCommandNames ?? [],
     importOptions.animationPresets ? await animationLibraryKey(importOptions.animationPresets) : "",
@@ -718,6 +719,21 @@ export const importWebGalWorkspace = async (
     extensions.webgalConfig = { path: configFile.path, values: config };
   }
   const configuredTitle = Object.entries(config).find(([key]) => key.toLowerCase() === "game_name")?.[1];
+  const configuredLanguage = Object.entries(config).find(([key]) => key.toLowerCase() === "default_language")?.[1];
+  let locale =
+    options.localeIndex === undefined ? undefined : ["ja", "en", "zh-TW", "zh-CN", "ko"][options.localeIndex];
+  if (
+    !locale &&
+    typeof configuredLanguage === "string" &&
+    configuredLanguage.trim() &&
+    !["auto", "system", "default"].includes(configuredLanguage.trim().toLowerCase())
+  ) {
+    const language = configuredLanguage.trim().replaceAll("_", "-");
+    const aliases: Readonly<Record<string, string>> = { jp: "ja", cn: "zh-CN", tw: "zh-TW" };
+    try {
+      locale = Intl.getCanonicalLocales(aliases[language.toLowerCase()] ?? language)[0];
+    } catch {}
+  }
   const layout = webGalRuntimeLayout(config);
   runtime.layout = { ...objectValue(runtime.layout), ...objectValue(layout.layout) };
   runtime.stage = { ...objectValue(runtime.stage), ...objectValue(layout.stage) };
@@ -753,6 +769,7 @@ export const importWebGalWorkspace = async (
     version: STORY_PROJECT_VERSION,
     meta: {
       ...baseProject.meta,
+      ...(locale ? { locale } : {}),
       ...(typeof configuredTitle === "string" && configuredTitle.trim() && !options.title
         ? { title: configuredTitle }
         : {}),

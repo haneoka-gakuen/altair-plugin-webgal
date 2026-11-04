@@ -353,6 +353,7 @@ export interface ImportWebGalOptions {
   sceneName?: string;
   releaseServer?: string;
   localeIndex?: number;
+  localeTag?: string;
   /**
    * Directory containing WebGAL's standard `background`, `figure`, `bgm`,
    * `vocal`, and `video` folders. The default matches a checked-out WebGAL
@@ -376,6 +377,7 @@ export interface WebGalSceneEditContext {
   sceneId: string;
   baselineText: string;
   localeIndex?: number;
+  localeTag?: string;
   scene: StoryScene;
   blocks: WebGalLosslessBlock[];
 }
@@ -390,6 +392,7 @@ interface WebGalLosslessEnvelope {
   scope: "scene" | "project";
   sceneId: string;
   localeIndex?: number;
+  localeTag?: string;
   scene?: StoryProject["scenes"][number];
   project?: StoryProject;
   blocks: WebGalLosslessBlock[];
@@ -1946,6 +1949,7 @@ const importWebGalPlain = (
     version: STORY_PROJECT_VERSION,
     meta: {
       title: options.title ?? "",
+      ...(options.localeTag ? { locale: options.localeTag } : {}),
       ...(options.releaseServer === undefined ? {} : { releaseServer: options.releaseServer }),
     },
     entrySceneId: sceneId,
@@ -2001,11 +2005,13 @@ const escapeContent = (value: string): string =>
     .replace(/[\r\n]+/g, " ");
 const nonEmptyLocalizedText = (value: JsonValue | undefined): value is string =>
   typeof value === "string" && Boolean(value);
-const localizedText = (value: JsonValue | undefined, localeIndex: number): { text: string; collapsed: boolean } => {
+const localizedText = (
+  value: JsonValue | undefined,
+  localeIndex: WebGalLocale,
+): { text: string; collapsed: boolean } => {
   if (typeof value === "string") return { text: value, collapsed: false };
   if (value && typeof value === "object" && !Array.isArray(value)) {
-    const localeKey = localeObjectKeys[localeIndex] || String(localeIndex);
-    const preferred = value[localeKey];
+    const preferred = value[localeKey(localeIndex)];
     const localized = Object.values(value).filter(nonEmptyLocalizedText);
     return {
       text: nonEmptyLocalizedText(preferred) ? preferred : localized[0] || "",
@@ -2013,7 +2019,7 @@ const localizedText = (value: JsonValue | undefined, localeIndex: number): { tex
     };
   }
   if (!Array.isArray(value)) return { text: value == null ? "" : String(value), collapsed: false };
-  const preferred = value[localeIndex];
+  const preferred = value[localeOffset(localeIndex)];
   const localized = value.filter(nonEmptyLocalizedText);
   const text = nonEmptyLocalizedText(preferred) ? preferred : localized[0] || "";
   return {
@@ -2025,7 +2031,7 @@ const fieldText = (fields: JsonObject, key: string): string => {
   const value = fields[key];
   return typeof value === "string" || typeof value === "number" ? String(value) : "";
 };
-const talkSpeaker = (fields: JsonObject, localeIndex: number): { text: string; collapsed: boolean } => {
+const talkSpeaker = (fields: JsonObject, localeIndex: WebGalLocale): { text: string; collapsed: boolean } => {
   for (const displayNames of [fields.targetTextNames, fields.targetTextNamesLocalized]) {
     const candidates = Array.isArray(displayNames) ? displayNames : [displayNames];
     const resolved = candidates.map((candidate) => localizedText(candidate, localeIndex)).filter(({ text }) => text);
@@ -2309,6 +2315,7 @@ export interface SerializeWebGalOptions {
   performanceReferences?: Readonly<Record<string, string>>;
   sceneId?: string;
   localeIndex?: number;
+  localeTag?: string;
   lineEnding?: "\n" | "\r\n";
   preserveUnchangedSource?: boolean;
   /**
@@ -2340,7 +2347,7 @@ const serializeWebGalInternal = (
   const diagnostics: StoryDiagnostic[] = [];
   const lines: string[] = [];
   const losslessBlocks: WebGalLosslessBlock[] = [];
-  const localeIndex = options.localeIndex ?? 0;
+  const localeIndex = options.localeTag ?? options.localeIndex ?? 0;
   const preserveSource = options.preserveUnchangedSource !== false;
   const losslessScope = options.losslessMetadata || false;
   const captureLossless = Boolean(losslessScope) || captureSceneContext;
@@ -3046,7 +3053,7 @@ const serializeWebGalInternal = (
       version: 1,
       scope: losslessScope || "scene",
       sceneId,
-      localeIndex,
+      ...localeOptions(localeIndex),
       ...(losslessScope === "project" ? { project: cloneStoryValue(project) } : { scene: cloneStoryValue(scene) }),
       blocks: losslessBlocks,
     };
@@ -3094,6 +3101,7 @@ const losslessEnvelope = (value: JsonValue): WebGalLosslessEnvelope | undefined 
     typeof candidate.sceneId !== "string" ||
     (candidate.localeIndex !== undefined &&
       (!Number.isSafeInteger(candidate.localeIndex) || candidate.localeIndex < 0)) ||
+    (candidate.localeTag !== undefined && typeof candidate.localeTag !== "string") ||
     !Array.isArray(candidate.blocks)
   ) {
     return undefined;
@@ -3261,6 +3269,7 @@ export const createWebGalSceneDraft = (
       sceneId,
       baselineText: text,
       localeIndex: options.localeIndex ?? 0,
+      ...(options.localeTag ? { localeTag: options.localeTag } : {}),
       scene: envelope.scene,
       blocks: envelope.blocks,
     },
@@ -3289,17 +3298,37 @@ interface MergedRepresentableFields {
   changedFields: number;
 }
 
+type WebGalLocale = number | string;
 const localeObjectKeys = ["ja", "en", "zh-TW", "zh-CN", "ko"] as const;
-const localizedSlot = (value: JsonValue | undefined, localeIndex: number): JsonValue | undefined => {
-  if (Array.isArray(value)) return value[localeIndex];
-  if (value && typeof value === "object") return value[localeObjectKeys[localeIndex] || String(localeIndex)];
+const localeKey = (locale: WebGalLocale): string =>
+  typeof locale === "string" ? locale : localeObjectKeys[locale] || String(locale);
+const localeOffset = (locale: WebGalLocale): number =>
+  typeof locale === "number" ? locale : localeObjectKeys.findIndex((key) => key === locale);
+const localeOptions = (locale: WebGalLocale): { localeIndex: number; localeTag?: string } =>
+  typeof locale === "number"
+    ? { localeIndex: locale }
+    : { localeIndex: Math.max(0, localeOffset(locale)), localeTag: locale };
+const localizedSlot = (value: JsonValue | undefined, localeIndex: WebGalLocale): JsonValue | undefined => {
+  if (Array.isArray(value)) return value[localeOffset(localeIndex)];
+  if (value && typeof value === "object") return value[localeKey(localeIndex)];
   return value;
 };
 const withLocalizedSlot = (
   value: JsonValue | undefined,
-  localeIndex: number,
+  localeIndex: WebGalLocale,
   edited: JsonValue | undefined,
 ): JsonValue | undefined => {
+  if (typeof localeIndex === "string") {
+    const localized: JsonObject = Array.isArray(value)
+      ? Object.fromEntries(
+          value.map((entry, index) => [localeObjectKeys[index] || String(index), cloneStoryValue(entry)]),
+        )
+      : value && typeof value === "object"
+        ? cloneStoryValue(value)
+        : {};
+    localized[localeIndex] = edited ?? "";
+    return localized;
+  }
   if (Array.isArray(value)) {
     const localized = cloneStoryValue(value);
     while (localized.length < Math.max(localeObjectKeys.length, localeIndex + 1)) localized.push("");
@@ -3323,7 +3352,7 @@ type TalkDisplayNameKey = (typeof talkDisplayNameKeys)[number];
 const hasOwnField = (fields: JsonObject, key: string): boolean => Object.prototype.hasOwnProperty.call(fields, key);
 const talkDisplayNameSource = (
   fields: JsonObject,
-  localeIndex: number,
+  localeIndex: WebGalLocale,
 ): { key: TalkDisplayNameKey; index: number } | undefined => {
   let fallback: { key: TalkDisplayNameKey; index: number } | undefined;
   for (const key of talkDisplayNameKeys) {
@@ -3339,7 +3368,7 @@ const talkDisplayNameSource = (
 const displayNameLocaleSlot = (
   value: JsonValue | undefined,
   nameIndex: number,
-  localeIndex: number,
+  localeIndex: WebGalLocale,
 ): JsonValue | undefined => {
   const name = Array.isArray(value) ? value[nameIndex] : value;
   return localizedSlot(name, localeIndex);
@@ -3347,7 +3376,7 @@ const displayNameLocaleSlot = (
 const withDisplayNameLocaleSlot = (
   value: JsonValue | undefined,
   nameIndex: number,
-  localeIndex: number,
+  localeIndex: WebGalLocale,
   edited: JsonValue | undefined,
 ): JsonValue | undefined => {
   if (!Array.isArray(value)) return withLocalizedSlot(value, localeIndex, edited);
@@ -3364,7 +3393,7 @@ const mergeRepresentableFields = (
   current: JsonObject,
   baselineProjection: JsonObject,
   edited: JsonObject,
-  localeIndex: number,
+  localeIndex: WebGalLocale,
   commandId: string,
   editedSource?: StorySourceLocation,
 ): MergedRepresentableFields => {
@@ -3594,7 +3623,7 @@ const projectionFieldsForCommand = (_command: number | string | null, fields: Js
 const canonicalProjectionForCommands = (
   baseline: readonly StoryProjectCommand[],
   edited: readonly StoryProjectCommand[],
-  localeIndex: number,
+  localeIndex: WebGalLocale,
 ): string => {
   const sceneId = "webgal-canonical-scene";
   const project: StoryProject = {
@@ -3619,7 +3648,7 @@ const canonicalProjectionForCommands = (
     storyFields: {},
     extensions: {},
   };
-  return serializeWebGal(project, { localeIndex, preserveUnchangedSource: false }).text;
+  return serializeWebGal(project, { ...localeOptions(localeIndex), preserveUnchangedSource: false }).text;
 };
 
 const consumedArgumentsForCommand = (command: number | string | null): ReadonlySet<string> => {
@@ -4161,6 +4190,7 @@ const mergeLosslessScene = (
   options: ImportWebGalOptions & {
     sceneId: string;
     localeIndex?: number;
+    localeTag?: string;
     baselineContext?: WebGalSceneEditContext;
   },
 ): StoryImportResult => {
@@ -4182,14 +4212,22 @@ const mergeLosslessScene = (
     throw new Error("WebGAL edit context belongs to another scene");
   }
   const storedLocaleIndex = options.baselineContext?.localeIndex ?? parsed.envelope?.localeIndex;
+  const storedLocaleTag = options.baselineContext?.localeTag ?? parsed.envelope?.localeTag;
   if (
-    storedLocaleIndex !== undefined &&
-    options.localeIndex !== undefined &&
-    storedLocaleIndex !== options.localeIndex
+    (storedLocaleIndex !== undefined &&
+      options.localeIndex !== undefined &&
+      storedLocaleIndex !== options.localeIndex) ||
+    (storedLocaleTag !== undefined && options.localeTag !== undefined && storedLocaleTag !== options.localeTag)
   ) {
     throw new Error("WebGAL edit locale does not match its lossless baseline");
   }
-  const localeIndex = storedLocaleIndex ?? options.localeIndex ?? 0;
+  const localeIndex =
+    options.baselineContext?.localeTag ??
+    parsed.envelope?.localeTag ??
+    options.localeTag ??
+    storedLocaleIndex ??
+    options.localeIndex ??
+    0;
   const baselineScene = options.baselineContext?.scene || parsed.envelope?.scene || scene;
   const baselineCommandIds = baselineScene.commands.map((command) => command.id);
   const baselineProject: StoryProject = {
@@ -4200,7 +4238,7 @@ const mergeLosslessScene = (
     ? undefined
     : serializeWebGal(baselineProject, {
         sceneId: scene.id,
-        localeIndex,
+        ...localeOptions(localeIndex),
         losslessMetadata: "scene",
       });
   const generatedParsed = generatedBaseline ? parseLosslessInput(generatedBaseline.text) : undefined;
@@ -4746,6 +4784,7 @@ const mergeLosslessScene = (
 export interface MergeWebGalSceneOptions extends ImportWebGalOptions {
   sceneId?: string;
   localeIndex?: number;
+  localeTag?: string;
   baselineContext?: WebGalSceneEditContext;
 }
 
