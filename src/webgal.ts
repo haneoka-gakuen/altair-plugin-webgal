@@ -905,9 +905,6 @@ interface WebGalNativeVisualSpec {
 const plainJsonObject = (value: unknown): JsonObject | undefined =>
   value && typeof value === "object" && !Array.isArray(value) ? (value as JsonObject) : undefined;
 
-const finiteJsonNumber = (value: JsonValue | undefined): number | undefined =>
-  typeof value === "number" && Number.isFinite(value) ? value : undefined;
-
 const parseWebGalTransform = (source: string): JsonObject | undefined => {
   try {
     return plainJsonObject(JSON.parse(source.trim() || "{}"));
@@ -1132,7 +1129,7 @@ const webGalAnimationFlags = (statement: WebGalStatement): JsonObject => ({
 
 const mapSetTransform = (
   statement: WebGalStatement,
-  context: WebGalVisualImportContext,
+  _context: WebGalVisualImportContext,
 ): { commands: StoryProjectCommand[]; fidelity: StoryConversionFidelity; message: string } => {
   const frame = parseWebGalTransform(statement.content);
   if (!frame) {
@@ -1162,7 +1159,7 @@ const mapSetTransform = (
 
 const mapSetTempAnimation = (
   statement: WebGalStatement,
-  context: WebGalVisualImportContext,
+  _context: WebGalVisualImportContext,
 ): { commands: StoryProjectCommand[]; fidelity: StoryConversionFidelity; message: string } => {
   let values: unknown;
   try {
@@ -1983,13 +1980,13 @@ const sameJson = (left: JsonValue | undefined, right: JsonValue | undefined): bo
   left === undefined || right === undefined
     ? left === right
     : JSON.stringify(canonicalJson(left)) === JSON.stringify(canonicalJson(right));
-const canonicalJson = (value: JsonValue): JsonValue =>
+export const canonicalJson = (value: JsonValue): JsonValue =>
   Array.isArray(value)
     ? value.map(canonicalJson)
     : value && typeof value === "object"
       ? Object.fromEntries(
           Object.entries(value)
-            .sort(([a], [b]) => a.localeCompare(b))
+            .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
             .map(([key, child]) => [key, canonicalJson(child)]),
         )
       : value;
