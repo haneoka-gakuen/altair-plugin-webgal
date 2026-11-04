@@ -74,6 +74,11 @@
       "types": "./dist/craft.d.ts",
       "import": "./dist/craft.js",
       "default": "./dist/craft.js"
+    },
+    "./native-script": {
+      "types": "./dist/native-script.d.ts",
+      "import": "./dist/native-script.js",
+      "default": "./dist/native-script.js"
     }
   },
   "scripts": {

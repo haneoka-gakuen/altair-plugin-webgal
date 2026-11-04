@@ -24,7 +24,8 @@ export const WEBGAL_DOCUMENT_COMMANDS: readonly AltairDocumentCommand[] = [
     lower: (node: AltairAuthoredNode) => [
       {
         id: node.id,
-        command: commandType,
+        command: commandType === WEBGAL_COMMAND_TYPES.setTempAnimation && node.arguments.animationVersion === 2
+          ? WEBGAL_COMMAND_TYPES.setTempAnimationV2 : commandType,
         fields: node.arguments,
         extensions: (node.extensions?.commandExtensions as JsonObject) ?? {},
       },
