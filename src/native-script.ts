@@ -3,7 +3,6 @@ import {
   cloneAltairNodeGroup,
   AltairDocumentRegistry,
   parseAltairSceneDocument,
-  serializeAuthoredText,
   serializeAltairDocument,
   type AltairAuthoredWorkspace,
   type AltairAuthoredNode,
@@ -14,7 +13,7 @@ import { ADV_COMMAND, commandDescriptor, replaceStoryCommandFieldValue } from "@
 import { registerAdvDocumentCommands } from "@haneoka/altair-plugin-adv/documents";
 import { VEGA_COMMAND_GROUP_OPCODE } from "@haneoka/vega-protocol";
 import { webGalCommandToAuthoredNode, registerWebGalDocumentCommands } from "./documents.js";
-import { createWebGalSceneDraft, mergeWebGalScene, type WebGalSceneEditContext } from "./webgal.js";
+import { canonicalJson, createWebGalSceneDraft, mergeWebGalScene, type WebGalSceneEditContext } from "./webgal.js";
 
 import { NATIVE_STATEMENT_NAMES, parseNativeStatement, serializeNativeStatement } from "./native-statements.js";
 
@@ -153,7 +152,7 @@ export function resolveNativeScriptWorkspace(
     scenes: workspace.scenes.map(cleanNativeScriptScene),
   });
   if (!states.size) return clean;
-  const project = nativeScriptRegistry().compile(clean);
+  const project = nativeScriptRegistry().compileDraft(clean);
   return withNativeScriptProviders({
     ...clean,
     scenes: clean.scenes.map((scene) => {
@@ -227,7 +226,7 @@ function unitsFor(project: StoryProject, scene: AltairSceneDocument, compact = f
       !node.children?.length &&
       serializeNativeStatement(command) !== undefined
     ) {
-      let projected = authorCommand(command);
+      const projected = authorCommand(command);
       for (const field of commandDescriptor(command.command)?.fields ?? [])
         if (Object.hasOwn(node.arguments, field.key))
           projected.fields = replaceStoryCommandFieldValue(projected.fields, field, node.arguments[field.key]);
@@ -361,7 +360,7 @@ export function nativeScriptWorkspaceFiles(
   const scenes = workspace.scenes.map(cleanNativeScriptScene);
   const { [NATIVE_SCRIPT_FILES]: _, ...extensions } = workspace.project.extensions ?? {};
   const clean = withNativeScriptProviders({ project: { ...workspace.project, extensions }, scenes });
-  const compiled = nativeScriptRegistry().compile(clean);
+  const compiled = nativeScriptRegistry().compileDraft(clean);
   const files = new Map<string, string>(),
     references: NativeScriptReference[] = [];
   const paths = workspace.project.scenes.map((reference, index) => {
@@ -375,7 +374,7 @@ export function nativeScriptWorkspaceFiles(
       createNativeScriptDraft(compiled, scene, localeIndex);
     files.set(path, serializeAltairDocument(scene, originals.get(reference.path)));
     files.set(source, draft.text);
-    files.set(map, JSON.stringify(draft.map));
+    files.set(map, JSON.stringify(canonicalJson(draft.map as unknown as JsonValue)));
     references.push({ sceneId: scene.id, source, map });
     return { ...reference, path };
   });
