@@ -1,5 +1,5 @@
 import { useState, useSyncExternalStore } from "react";
-import { Save, Trash2, Upload, Download, RotateCcw } from "lucide-react";
+import { Save, Trash2, Upload, Download, RotateCcw } from "@haneoka/altair-ui-react";
 import { serializeAuthoredText, type JsonObject } from "@haneoka/altair/documents";
 import { FILTER_PRESETS_PATH as PRESETS_PATH, parseFilterPresets as parse, type PresetLibrary } from "./presets.js";
 import type { AltairEditorWorkspace as EditorSession } from "@haneoka/altair/documents";

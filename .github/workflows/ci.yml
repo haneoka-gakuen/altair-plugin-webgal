@@ -30,7 +30,7 @@ jobs:
           repository: haneoka-gakuen/altair
           path: altair-plugin-webgal/.dependencies/altair
           persist-credentials: false
-          ref: 4bac2d08fbfd9872d7f77f18e3dc6f5612c07923
+          ref: c826e9ac3a244325e0c7871f985d4f3b40c590f8
 
       - name: Check out Altair ADV plugin
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

@@ -37,6 +37,22 @@ const definitions = new Map(
   ]),
 );
 export const NATIVE_STATEMENT_NAMES = [...definitions.keys()];
+export function nativeScriptLanguage() {
+  return [...definitions]
+    .filter(([, definition]) => definition.name !== "Talk" && definition.name !== "CommandGroup")
+    .map(([name, definition]) => {
+      const command = createStoryCommand(definition.name);
+      return {
+        name,
+        label: definition.name,
+        text: serializeNativeStatement(command)!.replace(/^[^:]+/u, name),
+        fields: definition.fields.map((field) => ({
+          name: keyFor(field),
+          text: `-${keyFor(field)}=${encode(storyCommandFieldValue(command, field) ?? "")}`,
+        })),
+      };
+    });
+}
 const same = (left: unknown, right: unknown) => JSON.stringify(left) === JSON.stringify(right);
 function encode(value: JsonValue): string {
   return JSON.stringify(value);

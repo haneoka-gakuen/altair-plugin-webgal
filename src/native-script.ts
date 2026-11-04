@@ -16,6 +16,7 @@ import { webGalCommandToAuthoredNode, registerWebGalDocumentCommands } from "./d
 import { canonicalJson, createWebGalSceneDraft, mergeWebGalScene, type WebGalSceneEditContext } from "./webgal.js";
 
 import { NATIVE_STATEMENT_NAMES, parseNativeStatement, serializeNativeStatement } from "./native-statements.js";
+export { nativeScriptLanguage } from "./native-statements.js";
 
 interface NativeScriptUnit {
   id: string;
