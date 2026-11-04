@@ -30,6 +30,7 @@ jobs:
           repository: haneoka-gakuen/altair
           path: altair-plugin-webgal/.dependencies/altair
           persist-credentials: false
+          ref: cd4e44d0670df22fe2e8f8ae3ebab3ab8365766d
 
       - name: Check out Altair ADV plugin
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -37,6 +38,7 @@ jobs:
           repository: haneoka-gakuen/altair-plugin-adv
           path: altair-plugin-webgal/.dependencies/altair-plugin-adv
           persist-credentials: false
+          ref: bfc4061296dfa589b6b8d586a369b3ff445c340d
 
       - name: Check out Vega
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -44,32 +46,38 @@ jobs:
           repository: haneoka-gakuen/vega
           path: altair-plugin-webgal/.dependencies/vega
           persist-credentials: false
+          ref: 2fa1b39c1176852db38a45b453c737e8e3439f5d
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: haneoka-gakuen/altair-plugin-flow
           path: altair-plugin-webgal/.dependencies/altair-plugin-flow
           persist-credentials: false
+          ref: c61fa42f9ee4ff5e587c3dd90f3ed2414414bcc3
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: haneoka-gakuen/altair-plugin-vega-preview
           path: altair-plugin-webgal/.dependencies/altair-plugin-vega-preview
           persist-credentials: false
+          ref: f826b4e39043cbe8ae17d7fc77e66ee062381ca0
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: haneoka-gakuen/vega-plugin-richtext
           path: altair-plugin-webgal/.dependencies/vega-plugin-richtext
           persist-credentials: false
+          ref: c043823cbb2c63a6966343db2e9ef0fb8ba4b703
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: haneoka-gakuen/vega-ui-portable
           path: altair-plugin-webgal/.dependencies/vega-ui-portable
           persist-credentials: false
+          ref: 06af193c1c7c7939394469aec5e7cfa7e71b220d
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: haneoka-gakuen/vega-plugin-webgal
           path: altair-plugin-webgal/.dependencies/vega-plugin-webgal
           persist-credentials: false
+          ref: 0d68dbd063eb1d113ecefda587f38b6b9c78e3f9
       - name: Set up pnpm
         uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
         with:
@@ -81,6 +89,27 @@ jobs:
           node-version: 24
           cache: pnpm
           cache-dependency-path: altair-plugin-webgal/pnpm-lock.yaml
+      - name: Check out vega-plugin-haneoka
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: haneoka-gakuen/vega-plugin-haneoka
+          ref: d02da4c16eee7413dbc07ade34ac288d05926456
+          path: altair-plugin-webgal/.dependencies/vega-plugin-haneoka
+          persist-credentials: false
+      - name: Check out vega-plugin-composite
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: haneoka-gakuen/vega-plugin-composite
+          ref: 5c151e08ee4e8cad9a0fbd98e97d06260b507b66
+          path: altair-plugin-webgal/.dependencies/vega-plugin-composite
+          persist-credentials: false
+      - name: Check out vega-renderer-three
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: haneoka-gakuen/vega-renderer-three
+          ref: 33a9127d9537cc5c303fceaa35fafda403713b42
+          path: altair-plugin-webgal/.dependencies/vega-renderer-three
+          persist-credentials: false
 
       - name: Install dependencies
         working-directory: altair-plugin-webgal
@@ -96,11 +125,19 @@ jobs:
 
       - name: Build Altair core
         working-directory: altair-plugin-webgal
-        run: pnpm --filter @haneoka/altair build:core && pnpm --filter @haneoka/altair-ui-react build && pnpm --filter @haneoka/vega-plugin-webgal build
+        run: pnpm --filter @haneoka/altair build:core && pnpm --filter
+          @haneoka/altair-ui-react build && pnpm --filter
+          @haneoka/vega-plugin-webgal build
 
       - name: Build Altair ADV plugin
         working-directory: altair-plugin-webgal
         run: pnpm --filter @haneoka/altair-plugin-adv build
+      - name: Build additional pinned SDK dependencies
+        working-directory: altair-plugin-webgal
+        run: |-
+          pnpm --filter @haneoka/vega-plugin-haneoka build
+          pnpm --filter @haneoka/vega-renderer-three build
+          pnpm --filter @haneoka/vega-plugin-composite build
 
       - name: Check package
         working-directory: altair-plugin-webgal

@@ -1,16 +1,19 @@
 packages:
-  - "."
-  - ".dependencies/altair"
-  - ".dependencies/altair/packages/ui-react"
-  - ".dependencies/altair-plugin-adv"
-  - ".dependencies/altair-plugin-flow"
-  - ".dependencies/altair-plugin-vega-preview"
-  - ".dependencies/altair/packages/preview-client"
-  - ".dependencies/vega"
-  - ".dependencies/vega/packages/protocol"
-  - ".dependencies/vega-plugin-webgal"
-  - ".dependencies/vega-plugin-richtext"
-  - ".dependencies/vega-ui-portable"
+  - .
+  - .dependencies/altair
+  - .dependencies/altair/packages/ui-react
+  - .dependencies/altair-plugin-adv
+  - .dependencies/altair-plugin-flow
+  - .dependencies/altair-plugin-vega-preview
+  - .dependencies/altair/packages/preview-client
+  - .dependencies/vega
+  - .dependencies/vega/packages/protocol
+  - .dependencies/vega-plugin-webgal
+  - .dependencies/vega-plugin-richtext
+  - .dependencies/vega-ui-portable
+  - .dependencies/vega-plugin-haneoka
+  - .dependencies/vega-plugin-composite
+  - .dependencies/vega-renderer-three
 
 linkWorkspacePackages: true
 
