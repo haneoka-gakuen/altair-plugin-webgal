@@ -29,7 +29,7 @@ jobs:
           repository: haneoka-gakuen/altair
           path: altair-plugin-webgal/.dependencies/altair
           persist-credentials: false
-          ref: cd4e44d0670df22fe2e8f8ae3ebab3ab8365766d
+          ref: 4bac2d08fbfd9872d7f77f18e3dc6f5612c07923
 
       - name: Check out Altair ADV plugin
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -58,7 +58,7 @@ jobs:
           repository: haneoka-gakuen/altair-plugin-vega-preview
           path: altair-plugin-webgal/.dependencies/altair-plugin-vega-preview
           persist-credentials: false
-          ref: f826b4e39043cbe8ae17d7fc77e66ee062381ca0
+          ref: 1e74bac498a5fb8b02745590b5a5d5b90fd425ef
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: haneoka-gakuen/vega-plugin-richtext
